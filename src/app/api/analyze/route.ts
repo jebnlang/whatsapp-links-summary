@@ -13,7 +13,18 @@ const maskedKey = keyLength > 8
   : '(not set)';
 const keyType = apiKey.startsWith('sk-') ? 'Standard' : apiKey.startsWith('sk-proj-') ? 'Project' : 'Unknown';
 
-console.log(`API Key: ${maskedKey} (Type: ${keyType}, Length: ${keyLength})`);
+// Validate API key format
+const isValidKey = apiKey.startsWith('sk-') && keyLength > 20;
+if (!isValidKey) {
+  console.error('Invalid OpenAI API key format:', {
+    keyLength,
+    keyType,
+    startsWithSk: apiKey.startsWith('sk-'),
+    environment: process.env.NODE_ENV
+  });
+}
+
+console.log(`API Key: ${maskedKey} (Type: ${keyType}, Length: ${keyLength}, Valid format: ${isValidKey})`);
 
 // Initialize OpenAI client with a longer timeout for paid Vercel plan
 const openai = new OpenAI({
@@ -25,6 +36,10 @@ const openai = new OpenAI({
 // Helper function to test OpenAI API connection
 async function testOpenAIConnection(): Promise<{success: boolean, error?: string}> {
   try {
+    if (!isValidKey) {
+      throw new Error('Invalid API key format');
+    }
+
     console.log("Testing OpenAI API connection...");
     const startTime = Date.now();
     
@@ -41,7 +56,15 @@ async function testOpenAIConnection(): Promise<{success: boolean, error?: string
     console.log(`OpenAI test successful in ${elapsed}ms: ${response.choices[0].message.content}`);
     return { success: true };
   } catch (error) {
-    console.error("OpenAI API test failed:", error);
+    console.error("OpenAI API test failed:", {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      type: error instanceof Error ? error.constructor.name : 'Unknown',
+      keyInfo: {
+        length: keyLength,
+        type: keyType,
+        valid: isValidKey
+      }
+    });
     return { 
       success: false, 
       error: error instanceof Error ? error.message : 'Unknown error'
