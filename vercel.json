@@ -1,0 +1,12 @@
+{
+  "functions": {
+    "src/app/api/analyze/route.ts": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  },
+  "regions": ["iad1"],
+  "env": {
+    "OPENAI_API_KEY": "${OPENAI_API_KEY}"
+  }
+} 

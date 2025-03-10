@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import JSZip from 'jszip';
 import OpenAI from 'openai';
 
+// Configure for Edge Runtime
+export const runtime = 'edge';
+
 // Initialize OpenAI client with a longer timeout for paid Vercel plan
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -271,15 +274,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Optional: Limit links for extremely large datasets
-    // For paid plans we can process more links, but still cap it at a reasonable number
-    const MAX_LINKS = 200; // Much higher limit for paid plan
+    // Strictly limit links to ensure processing completes within timeout
+    const MAX_LINKS = 50; // Reduced limit for higher reliability
     const linksToProcess = uniqueLinks.length > MAX_LINKS 
       ? uniqueLinks.slice(0, MAX_LINKS) 
       : uniqueLinks;
     
     if (uniqueLinks.length > MAX_LINKS) {
-      console.log(`Limiting links from ${uniqueLinks.length} to ${MAX_LINKS} to ensure reasonable processing time`);
+      console.log(`Limiting links from ${uniqueLinks.length} to ${MAX_LINKS} to prevent timeout`);
     }
 
     // Step 4: AI Analysis
@@ -376,12 +378,28 @@ async function generateSummary(
     }
 
     console.log('Creating OpenAI prompt with links:', links.length);
+
+    // Strictly limit the number of links to process based on their total length
+    const MAX_CHARS = 10000;
+    let totalChars = 0;
+    const limitedLinks: string[] = [];
+    
+    for (const link of links) {
+      totalChars += link.length;
+      
+      if (totalChars > MAX_CHARS) {
+        console.log(`Reached character limit (${MAX_CHARS}), limiting to ${limitedLinks.length} links`);
+        break;
+      }
+      
+      limitedLinks.push(link);
+    }
     
     const prompt = `
       אני מנהל קהילה של יזמי סולו ואני רוצה לסכם לינקים שפורסמו בקבוצות וואטסאפ שלנו ${dateRangeInfo ? dateRangeInfo : ''}.
       
       להלן רשימת הלינקים שפורסמו:
-      ${links.join('\n')}
+      ${limitedLinks.join('\n')}
       
       אנא צור סיכום מסודר וברור של הלינקים הללו, עם החלוקה הבאה:
       1. התחל את הסיכום עם כותרת "*סיכום לינקים ליזמי סולו:*"
@@ -405,15 +423,15 @@ async function generateSummary(
     console.log('Making API call to OpenAI');
     
     try {
-      // Since we have a paid account with longer timeout, we can use GPT-4
+      // First try with GPT-3.5 for speed
       const response = await openai.chat.completions.create({
-        model: 'gpt-4-turbo', // Using GPT-4 for higher quality summaries
+        model: 'gpt-3.5-turbo', // Use faster model for production
         messages: [
-          { role: 'system', content: 'אתה עוזר מועיל המתמחה בארגון וסיכום מידע עבור קבוצות וואטסאפ. יש לך ידע על פורמט הטקסט בוואטסאפ ועל איך ליצור תוכן שיהיה נראה טוב בוואטסאפ. אתה יודע שוואטסאפ תומך בטקסט מימין לשמאל (RTL) ואתה מקפיד ליצור פורמט שיהיה נכון ויפה בוואטסאפ.' },
+          { role: 'system', content: 'אתה עוזר מועיל המתמחה בארגון וסיכום מידע עבור קבוצות וואטסאפ. כתוב בעברית, מימין לשמאל.' },
           { role: 'user', content: prompt }
         ],
         temperature: 0.7,
-        max_tokens: 4000, // We can use more tokens with the longer timeout
+        max_tokens: 2000, // Reduce tokens for faster response
       });
       
       console.log('OpenAI API call succeeded');
@@ -422,29 +440,42 @@ async function generateSummary(
     } catch (error) {
       console.error('Error in OpenAI API call:', error);
       
-      // If we get a timeout error, try with a smaller model and fewer tokens as fallback
+      // If we get a timeout error, use a much simpler prompt
       if (error instanceof Error && 
           (error.message.includes('timeout') || 
           ('code' in error && (error as OpenAIError).code === 'ETIMEDOUT'))) {
         
-        console.log('Timeout occurred, trying fallback with GPT-3.5-Turbo');
+        console.log('Timeout occurred, trying with simplified prompt');
         
         try {
-          // Fallback to a faster model
+          // Use a bare minimum approach
+          const simplifiedPrompt = `סכם את הלינקים הבאים בקצרה:
+            ${limitedLinks.slice(0, 20).join('\n')}
+            
+            התחל את הסיכום עם: "*סיכום לינקים ליזמי סולו:*"
+            בשורה השניה הוסף: "תאריך-${summaryDateInfo}"
+          `;
+          
           const fallbackResponse = await openai.chat.completions.create({
             model: 'gpt-3.5-turbo',
             messages: [
-              { role: 'system', content: 'אתה עוזר מועיל המתמחה בארגון וסיכום מידע עבור קבוצות וואטסאפ.' },
-              { role: 'user', content: prompt }
+              { role: 'system', content: 'תן תשובה קצרה בעברית.' },
+              { role: 'user', content: simplifiedPrompt }
             ],
-            temperature: 0.7,
-            max_tokens: 2000,
+            temperature: 0.5,
+            max_tokens: 1000,
           });
           
           return fallbackResponse.choices[0].message.content || 'לא הצלחתי לייצר סיכום';
         } catch (_) {
-          // If even the fallback fails, throw the original error
-          throw error;
+          // If even the simplified approach fails, return a basic message
+          return `*סיכום לינקים ליזמי סולו:*
+תאריך-${summaryDateInfo}
+
+*לינקים שנמצאו:*
+${limitedLinks.slice(0, 10).map(link => `- ${link}`).join('\n')}
+
+(הסיכום נכשל עקב עומס - הצגת לינקים בלבד)`;
         }
       }
       
