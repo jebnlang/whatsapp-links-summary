@@ -5,6 +5,16 @@ import OpenAI from 'openai';
 // Remove Edge Runtime as it may not be compatible with all dependencies
 // export const runtime = 'edge';
 
+// Safe logging of API key format for debugging
+const apiKey = process.env.OPENAI_API_KEY || '';
+const keyLength = apiKey.length;
+const maskedKey = keyLength > 8 
+  ? `${apiKey.substring(0, 4)}...${apiKey.substring(keyLength - 4)}` 
+  : '(not set)';
+const keyType = apiKey.startsWith('sk-') ? 'Standard' : apiKey.startsWith('sk-proj-') ? 'Project' : 'Unknown';
+
+console.log(`API Key: ${maskedKey} (Type: ${keyType}, Length: ${keyLength})`);
+
 // Initialize OpenAI client with a longer timeout for paid Vercel plan
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -12,9 +22,41 @@ const openai = new OpenAI({
   maxRetries: 2,
 });
 
+// Helper function to test OpenAI API connection
+async function testOpenAIConnection(): Promise<{success: boolean, error?: string}> {
+  try {
+    console.log("Testing OpenAI API connection...");
+    const startTime = Date.now();
+    
+    const response = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo',
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Say hello in Hebrew' }
+      ],
+      max_tokens: 10,
+    });
+    
+    const elapsed = Date.now() - startTime;
+    console.log(`OpenAI test successful in ${elapsed}ms: ${response.choices[0].message.content}`);
+    return { success: true };
+  } catch (error) {
+    console.error("OpenAI API test failed:", error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  }
+}
+
 // Log environment variables during initialization (masked for security)
 console.log(`OpenAI API Key available: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}`);
 console.log(`Environment: ${process.env.NODE_ENV}`);
+
+// Run API test on initialization
+testOpenAIConnection()
+  .then(result => console.log(`API test result: ${result.success ? 'Success' : 'Failed - ' + result.error}`))
+  .catch(err => console.error("API test unexpected error:", err));
 
 // Helper function to log execution time
 function logTime(label: string, startTime: number) {
