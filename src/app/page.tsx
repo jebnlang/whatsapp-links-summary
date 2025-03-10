@@ -6,12 +6,20 @@ import "react-datepicker/dist/react-datepicker.css";
 
 type ProcessStep = 'idle' | 'uploading' | 'filtering' | 'extracting' | 'analyzing' | 'complete';
 
+// Enhanced error interface
+interface ApiError {
+  message: string;
+  error?: string;
+  details?: unknown;
+}
+
 export default function Home() {
   const [files, setFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
   const [processStep, setProcessStep] = useState<ProcessStep>('idle');
   const [summary, setSummary] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [errorDetails, setErrorDetails] = useState<string>("");
   const [startDate, setStartDate] = useState<Date | null>(null);
   const [endDate, setEndDate] = useState<Date | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
@@ -98,6 +106,7 @@ export default function Home() {
 
     setLoading(true);
     setError("");
+    setErrorDetails("");
     setSummary("");
     setProcessStep('uploading');
     
@@ -123,8 +132,42 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || "שגיאה בעיבוד הקבצים");
+        let errorMessage = "שגיאה בעיבוד הקבצים";
+        let errorDetailsMessage = "";
+        
+        try {
+          // Try to parse the error response as JSON
+          const errorData = await response.json() as ApiError;
+          
+          if (errorData.message) {
+            errorMessage = errorData.message;
+          }
+          
+          if (errorData.error) {
+            errorDetailsMessage = `Error: ${errorData.error}`;
+          }
+          
+          if (errorData.details) {
+            errorDetailsMessage += `\nDetails: ${JSON.stringify(errorData.details, null, 2)}`;
+          }
+        } catch (parseError) {
+          // If we can't parse the response as JSON, use the status text
+          errorMessage = `שגיאה ${response.status}: ${response.statusText}`;
+          
+          // Try to get the text response
+          try {
+            const textResponse = await response.text();
+            errorDetailsMessage = textResponse;
+          } catch (textError) {
+            errorDetailsMessage = "לא ניתן לקרוא את פרטי השגיאה";
+          }
+        }
+        
+        setError(errorMessage);
+        setErrorDetails(errorDetailsMessage);
+        setProcessStep('idle');
+        setLoading(false);
+        return;
       }
 
       // Success, set final state
@@ -132,7 +175,13 @@ export default function Home() {
       const data = await response.json();
       setSummary(data.summary);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "שגיאה לא ידועה");
+      const errorMessage = err instanceof Error ? err.message : "שגיאה לא ידועה";
+      setError(errorMessage);
+      
+      if (err instanceof Error) {
+        setErrorDetails(err.stack || "");
+      }
+      
       setProcessStep('idle');
     } finally {
       setLoading(false);
@@ -302,7 +351,17 @@ export default function Home() {
 
       {error && (
         <div className="bg-red-900 text-white p-4 rounded-md mb-8 border border-red-700">
-          {error}
+          <p className="font-bold mb-2">שגיאה:</p>
+          <p>{error}</p>
+          
+          {errorDetails && (
+            <div className="mt-4">
+              <p className="font-bold mb-2">פרטי שגיאה (למפתחים):</p>
+              <pre className="bg-red-950 p-3 rounded overflow-auto text-xs max-h-40">
+                {errorDetails}
+              </pre>
+            </div>
+          )}
         </div>
       )}
 

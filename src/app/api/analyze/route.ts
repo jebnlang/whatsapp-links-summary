@@ -7,6 +7,10 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Log environment variables during initialization (masked for security)
+console.log(`OpenAI API Key available: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}`);
+console.log(`Environment: ${process.env.NODE_ENV}`);
+
 // Regex pattern to find links
 const urlPattern = /(https?:\/\/[^\s]+)/g;
 
@@ -90,10 +94,14 @@ function formatDateForSummary(date: Date): string {
 interface ResponseData {
   summary?: string;
   message?: string;
+  error?: string;
+  details?: unknown;
 }
 
 export async function POST(request: NextRequest) {
   try {
+    console.log('Starting POST request to /api/analyze');
+    
     // Get form data from the request
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];
@@ -101,6 +109,9 @@ export async function POST(request: NextRequest) {
     // Get date filters if provided
     const startDateStr = formData.get('startDate') as string | null;
     const endDateStr = formData.get('endDate') as string | null;
+    
+    console.log(`Files received: ${files.length}`);
+    console.log(`Date range: ${startDateStr} to ${endDateStr}`);
     
     // Parse date filters
     let startDate = startDateStr ? new Date(startDateStr) : null;
@@ -126,7 +137,7 @@ export async function POST(request: NextRequest) {
       endDate = setToEndOfDay(endDate);
     }
     
-    console.log(`Date range: ${startDate?.toISOString()} - ${endDate?.toISOString()}`);
+    console.log(`Processed date range: ${startDate?.toISOString()} - ${endDate?.toISOString()}`);
     
     if (files.length === 0) {
       return NextResponse.json(
@@ -159,17 +170,22 @@ export async function POST(request: NextRequest) {
         const zip = new JSZip();
         await zip.loadAsync(zipBuffer);
         
+        console.log(`Processing ZIP file: ${file.name}`);
+        
         // Step 2: Filter by date
         // Find and process the chat files (typically _chat.txt)
         for (const fileName in zip.files) {
           if (fileName.endsWith('_chat.txt')) {
             const chatFileContent = await zip.files[fileName].async('string');
+            console.log(`Found chat file: ${fileName}, size: ${chatFileContent.length} chars`);
             
             // Split by lines and process each line
             const lines = chatFileContent.split('\n');
+            console.log(`Total lines in chat: ${lines.length}`);
             
             let currentDate: Date | null = null;
             let currentLine = '';
+            let messagesInRange = 0;
             
             // Step 3: Extract links
             for (let i = 0; i < lines.length; i++) {
@@ -186,6 +202,7 @@ export async function POST(request: NextRequest) {
                                     (!endDate || currentDate <= endDate);
                   
                   if (isInRange) {
+                    messagesInRange++;
                     const linksInLine = currentLine.match(urlPattern) || [];
                     allLinks.push(...linksInLine);
                   }
@@ -206,16 +223,23 @@ export async function POST(request: NextRequest) {
                                 (!endDate || currentDate <= endDate);
               
               if (isInRange) {
+                messagesInRange++;
                 const linksInLine = currentLine.match(urlPattern) || [];
                 allLinks.push(...linksInLine);
               }
             }
+            
+            console.log(`Messages in specified date range: ${messagesInRange}`);
           }
         }
       }
     } catch (error) {
       console.error('Error processing files:', error);
-      return responseWithProgress('idle', { message: 'שגיאה בעיבוד הקבצים' }, 500);
+      return responseWithProgress('idle', { 
+        message: 'שגיאה בעיבוד הקבצים',
+        error: error instanceof Error ? error.message : 'Unknown error',
+        details: error 
+      }, 500);
     }
     
     // Remove duplicates
@@ -236,16 +260,36 @@ export async function POST(request: NextRequest) {
     // Step 4: AI Analysis
     // Generate summary using OpenAI
     try {
+      console.log('Sending request to OpenAI...');
       const summary = await generateSummary(uniqueLinks, startDate, endDate);
+      console.log('Summary generation successful');
       return responseWithProgress('complete', { summary });
     } catch (error) {
-      console.error('Error generating summary:', error);
-      return responseWithProgress('idle', { message: 'שגיאה בניתוח הלינקים' }, 500);
+      console.error('Error generating summary with OpenAI:', error);
+      
+      const errorDetails: ResponseData = {
+        message: 'שגיאה בניתוח הלינקים',
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+      
+      // Include additional details for debugging
+      if (error instanceof Error && 'status' in error) {
+        errorDetails.details = {
+          status: (error as any).status,
+          type: (error as any).type,
+        };
+      }
+      
+      return responseWithProgress('idle', errorDetails, 500);
     }
   } catch (error) {
-    console.error('Error processing files:', error);
+    console.error('Error in POST handler:', error);
     return NextResponse.json(
-      { message: 'אירעה שגיאה בעיבוד הקבצים' },
+      { 
+        message: 'אירעה שגיאה בעיבוד הקבצים',
+        error: error instanceof Error ? error.message : 'Unknown error',
+        details: error
+      },
       { 
         status: 500,
         headers: {
@@ -299,6 +343,8 @@ async function generateSummary(
       dateRangeInfo = `עד לתאריך ${endDate.toLocaleDateString('he-IL')}`;
     }
 
+    console.log('Creating OpenAI prompt with links:', links.length);
+    
     const prompt = `
       אני מנהל קהילה של יזמי סולו ואני רוצה לסכם לינקים שפורסמו בקבוצות וואטסאפ שלנו ${dateRangeInfo ? dateRangeInfo : ''}.
       
@@ -324,19 +370,29 @@ async function generateSummary(
       - הסיכום צריך להיות קל להעתקה והדבקה לקבוצת וואטסאפ
     `;
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4-turbo',
-      messages: [
-        { role: 'system', content: 'אתה עוזר מועיל המתמחה בארגון וסיכום מידע עבור קבוצות וואטסאפ. יש לך ידע על פורמט הטקסט בוואטסאפ ועל איך ליצור תוכן שיהיה נראה טוב בוואטסאפ. אתה יודע שוואטסאפ תומך בטקסט מימין לשמאל (RTL) ואתה מקפיד ליצור פורמט שיהיה נכון ויפה בוואטסאפ.' },
-        { role: 'user', content: prompt }
-      ],
-      temperature: 0.7,
-      max_tokens: 4000,
-    });
-
-    return response.choices[0].message.content || 'לא הצלחתי לייצר סיכום';
+    console.log('Making API call to OpenAI');
+    
+    try {
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4-turbo',
+        messages: [
+          { role: 'system', content: 'אתה עוזר מועיל המתמחה בארגון וסיכום מידע עבור קבוצות וואטסאפ. יש לך ידע על פורמט הטקסט בוואטסאפ ועל איך ליצור תוכן שיהיה נראה טוב בוואטסאפ. אתה יודע שוואטסאפ תומך בטקסט מימין לשמאל (RTL) ואתה מקפיד ליצור פורמט שיהיה נכון ויפה בוואטסאפ.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 4000,
+      });
+      
+      console.log('OpenAI API call succeeded');
+      
+      return response.choices[0].message.content || 'לא הצלחתי לייצר סיכום';
+    } catch (error) {
+      console.error('Error in OpenAI API call:', error);
+      // Re-throw the error with more context
+      throw new Error(`OpenAI API error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   } catch (error) {
-    console.error('Error generating summary with OpenAI:', error);
-    return 'שגיאה בעת יצירת הסיכום. אנא נסה שוב מאוחר יותר.';
+    console.error('Error in generateSummary function:', error);
+    throw error; // Re-throw to be handled by the caller
   }
 } 
