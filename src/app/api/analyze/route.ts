@@ -86,6 +86,12 @@ function formatDateForSummary(date: Date): string {
   return `${date.getDate().toString().padStart(2, '0')}.${(date.getMonth() + 1).toString().padStart(2, '0')}`;
 }
 
+// Define a type for the response data
+interface ResponseData {
+  summary?: string;
+  message?: string;
+}
+
 export async function POST(request: NextRequest) {
   try {
     // Get form data from the request
@@ -130,7 +136,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Create a response object with progress steps
-    const responseWithProgress = (step: string, data: any = {}, status: number = 200) => {
+    const responseWithProgress = (step: string, data: ResponseData = {}, status: number = 200) => {
       return NextResponse.json(
         data,
         { 
