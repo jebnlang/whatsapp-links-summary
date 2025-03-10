@@ -2,19 +2,26 @@ import { NextRequest, NextResponse } from 'next/server';
 import JSZip from 'jszip';
 import OpenAI from 'openai';
 
-// Configure for Edge Runtime
-export const runtime = 'edge';
+// Remove Edge Runtime as it may not be compatible with all dependencies
+// export const runtime = 'edge';
 
 // Initialize OpenAI client with a longer timeout for paid Vercel plan
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-  timeout: 55000, // 55 seconds timeout (slightly under Vercel's 60s limit)
-  maxRetries: 3,
+  timeout: 50000, // 50 seconds timeout
+  maxRetries: 2,
 });
 
 // Log environment variables during initialization (masked for security)
 console.log(`OpenAI API Key available: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}`);
 console.log(`Environment: ${process.env.NODE_ENV}`);
+
+// Helper function to log execution time
+function logTime(label: string, startTime: number) {
+  const elapsed = Date.now() - startTime;
+  console.log(`${label}: ${elapsed}ms`);
+  return elapsed;
+}
 
 // Regex pattern to find links
 const urlPattern = /(https?:\/\/[^\s]+)/g;
@@ -116,6 +123,9 @@ export const config = {
 };
 
 export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  console.log(`API request started at: ${new Date().toISOString()}`);
+  
   try {
     console.log('Starting POST request to /api/analyze');
     
@@ -129,6 +139,7 @@ export async function POST(request: NextRequest) {
     
     console.log(`Files received: ${files.length}`);
     console.log(`Date range: ${startDateStr} to ${endDateStr}`);
+    logTime('Request parsing', startTime);
     
     // Parse date filters
     let startDate = startDateStr ? new Date(startDateStr) : null;
@@ -177,6 +188,7 @@ export async function POST(request: NextRequest) {
     };
 
     // Process all files
+    const fileProcessingStartTime = Date.now();
     const allLinks: string[] = [];
     
     // Step 1: Process zip files
@@ -259,6 +271,8 @@ export async function POST(request: NextRequest) {
       }, 500);
     }
     
+    logTime('File processing', fileProcessingStartTime);
+    
     // Remove duplicates
     const uniqueLinks = [...new Set(allLinks)];
     
@@ -275,7 +289,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Strictly limit links to ensure processing completes within timeout
-    const MAX_LINKS = 50; // Reduced limit for higher reliability
+    const MAX_LINKS = 30; // Further reduced limit for higher reliability
     const linksToProcess = uniqueLinks.length > MAX_LINKS 
       ? uniqueLinks.slice(0, MAX_LINKS) 
       : uniqueLinks;
@@ -286,12 +300,19 @@ export async function POST(request: NextRequest) {
 
     // Step 4: AI Analysis
     // Generate summary using OpenAI
+    const aiStartTime = Date.now();
     try {
       console.log('Sending request to OpenAI...');
       const summary = await generateSummary(linksToProcess, startDate, endDate);
+      const aiTime = logTime('AI processing', aiStartTime);
       console.log('Summary generation successful');
+      
+      // Log total execution time
+      logTime('Total execution time', startTime);
+      
       return responseWithProgress('complete', { summary });
     } catch (error) {
+      const aiTime = logTime('AI processing (error)', aiStartTime);
       console.error('Error generating summary with OpenAI:', error);
       
       const errorDetails: ResponseData = {
@@ -305,6 +326,8 @@ export async function POST(request: NextRequest) {
         errorDetails.details = {
           status: openAIError.status,
           type: openAIError.type,
+          aiTimeMs: aiTime,
+          totalTimeMs: Date.now() - startTime
         };
       }
       
@@ -318,11 +341,16 @@ export async function POST(request: NextRequest) {
     }
   } catch (error) {
     console.error('Error in POST handler:', error);
+    const totalTime = logTime('Total execution time (error)', startTime);
+    
     return NextResponse.json(
       { 
         message: 'אירעה שגיאה בעיבוד הקבצים',
         error: error instanceof Error ? error.message : 'Unknown error',
-        details: error
+        details: {
+          error,
+          totalTimeMs: totalTime
+        }
       },
       { 
         status: 500,
