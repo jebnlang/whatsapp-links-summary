@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import JSZip from 'jszip';
 import OpenAI from 'openai';
 
-// Initialize OpenAI client
+// Initialize OpenAI client with a longer timeout for paid Vercel plan
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+  timeout: 55000, // 55 seconds timeout (slightly under Vercel's 60s limit)
+  maxRetries: 3,
 });
 
 // Log environment variables during initialization (masked for security)
@@ -97,6 +99,11 @@ interface ResponseData {
   error?: string;
   details?: unknown;
 }
+
+// Configure Vercel serverless function to use maximum timeout for paid plan
+export const config = {
+  maxDuration: 60, // Maximum 60 seconds for paid Vercel plans
+};
 
 export async function POST(request: NextRequest) {
   try {
@@ -257,11 +264,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Optional: Limit links for extremely large datasets
+    // For paid plans we can process more links, but still cap it at a reasonable number
+    const MAX_LINKS = 200; // Much higher limit for paid plan
+    const linksToProcess = uniqueLinks.length > MAX_LINKS 
+      ? uniqueLinks.slice(0, MAX_LINKS) 
+      : uniqueLinks;
+    
+    if (uniqueLinks.length > MAX_LINKS) {
+      console.log(`Limiting links from ${uniqueLinks.length} to ${MAX_LINKS} to ensure reasonable processing time`);
+    }
+
     // Step 4: AI Analysis
     // Generate summary using OpenAI
     try {
       console.log('Sending request to OpenAI...');
-      const summary = await generateSummary(uniqueLinks, startDate, endDate);
+      const summary = await generateSummary(linksToProcess, startDate, endDate);
       console.log('Summary generation successful');
       return responseWithProgress('complete', { summary });
     } catch (error) {
@@ -278,6 +296,12 @@ export async function POST(request: NextRequest) {
           status: (error as any).status,
           type: (error as any).type,
         };
+      }
+      
+      // Special handling for timeout errors
+      if (error instanceof Error && error.message.includes('timeout') || 
+          (error instanceof Error && 'code' in error && (error as any).code === 'ETIMEDOUT')) {
+        errorDetails.message = 'זמן העיבוד ארוך מדי. אנא נסה עם פחות קבצים או טווח תאריכים קטן יותר.';
       }
       
       return responseWithProgress('idle', errorDetails, 500);
@@ -373,14 +397,15 @@ async function generateSummary(
     console.log('Making API call to OpenAI');
     
     try {
+      // Since we have a paid account with longer timeout, we can use GPT-4
       const response = await openai.chat.completions.create({
-        model: 'gpt-4-turbo',
+        model: 'gpt-4-turbo', // Using GPT-4 for higher quality summaries
         messages: [
           { role: 'system', content: 'אתה עוזר מועיל המתמחה בארגון וסיכום מידע עבור קבוצות וואטסאפ. יש לך ידע על פורמט הטקסט בוואטסאפ ועל איך ליצור תוכן שיהיה נראה טוב בוואטסאפ. אתה יודע שוואטסאפ תומך בטקסט מימין לשמאל (RTL) ואתה מקפיד ליצור פורמט שיהיה נכון ויפה בוואטסאפ.' },
           { role: 'user', content: prompt }
         ],
         temperature: 0.7,
-        max_tokens: 4000,
+        max_tokens: 4000, // We can use more tokens with the longer timeout
       });
       
       console.log('OpenAI API call succeeded');
@@ -388,6 +413,33 @@ async function generateSummary(
       return response.choices[0].message.content || 'לא הצלחתי לייצר סיכום';
     } catch (error) {
       console.error('Error in OpenAI API call:', error);
+      
+      // If we get a timeout error, try with a smaller model and fewer tokens as fallback
+      if (error instanceof Error && 
+          (error.message.includes('timeout') || 
+          ('code' in error && (error as any).code === 'ETIMEDOUT'))) {
+        
+        console.log('Timeout occurred, trying fallback with GPT-3.5-Turbo');
+        
+        try {
+          // Fallback to a faster model
+          const fallbackResponse = await openai.chat.completions.create({
+            model: 'gpt-3.5-turbo',
+            messages: [
+              { role: 'system', content: 'אתה עוזר מועיל המתמחה בארגון וסיכום מידע עבור קבוצות וואטסאפ.' },
+              { role: 'user', content: prompt }
+            ],
+            temperature: 0.7,
+            max_tokens: 2000,
+          });
+          
+          return fallbackResponse.choices[0].message.content || 'לא הצלחתי לייצר סיכום';
+        } catch (fallbackError) {
+          // If even the fallback fails, throw the original error
+          throw error;
+        }
+      }
+      
       // Re-throw the error with more context
       throw new Error(`OpenAI API error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
