@@ -150,7 +150,7 @@ export default function Home() {
           if (errorData.details) {
             errorDetailsMessage += `\nDetails: ${JSON.stringify(errorData.details, null, 2)}`;
           }
-        } catch (parseError) {
+        } catch (_) {
           // If we can't parse the response as JSON, use the status text
           errorMessage = `שגיאה ${response.status}: ${response.statusText}`;
           
@@ -158,7 +158,7 @@ export default function Home() {
           try {
             const textResponse = await response.text();
             errorDetailsMessage = textResponse;
-          } catch (textError) {
+          } catch (_) {
             errorDetailsMessage = "לא ניתן לקרוא את פרטי השגיאה";
           }
         }

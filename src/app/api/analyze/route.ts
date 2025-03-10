@@ -100,6 +100,13 @@ interface ResponseData {
   details?: unknown;
 }
 
+// Define OpenAI error type
+interface OpenAIError extends Error {
+  status?: number;
+  type?: string;
+  code?: string;
+}
+
 // Configure Vercel serverless function to use maximum timeout for paid plan
 export const config = {
   maxDuration: 60, // Maximum 60 seconds for paid Vercel plans
@@ -292,15 +299,16 @@ export async function POST(request: NextRequest) {
       
       // Include additional details for debugging
       if (error instanceof Error && 'status' in error) {
+        const openAIError = error as OpenAIError;
         errorDetails.details = {
-          status: (error as any).status,
-          type: (error as any).type,
+          status: openAIError.status,
+          type: openAIError.type,
         };
       }
       
       // Special handling for timeout errors
       if (error instanceof Error && error.message.includes('timeout') || 
-          (error instanceof Error && 'code' in error && (error as any).code === 'ETIMEDOUT')) {
+          (error instanceof Error && 'code' in error && (error as OpenAIError).code === 'ETIMEDOUT')) {
         errorDetails.message = 'זמן העיבוד ארוך מדי. אנא נסה עם פחות קבצים או טווח תאריכים קטן יותר.';
       }
       
@@ -417,7 +425,7 @@ async function generateSummary(
       // If we get a timeout error, try with a smaller model and fewer tokens as fallback
       if (error instanceof Error && 
           (error.message.includes('timeout') || 
-          ('code' in error && (error as any).code === 'ETIMEDOUT'))) {
+          ('code' in error && (error as OpenAIError).code === 'ETIMEDOUT'))) {
         
         console.log('Timeout occurred, trying fallback with GPT-3.5-Turbo');
         
@@ -434,7 +442,7 @@ async function generateSummary(
           });
           
           return fallbackResponse.choices[0].message.content || 'לא הצלחתי לייצר סיכום';
-        } catch (fallbackError) {
+        } catch (_) {
           // If even the fallback fails, throw the original error
           throw error;
         }
