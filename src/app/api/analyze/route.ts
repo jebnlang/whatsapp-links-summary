@@ -190,12 +190,27 @@ export const config = {
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
   console.log(`API request started at: ${new Date().toISOString()}`);
+  console.log('Request headers:', Object.fromEntries([...request.headers.entries()]));
   
   try {
     console.log('Starting POST request to /api/analyze');
     
     // Get form data from the request
-    const formData = await request.formData();
+    let formData;
+    try {
+      formData = await request.formData();
+      console.log('FormData parsed successfully');
+    } catch (formError) {
+      console.error('Error parsing form data:', formError);
+      return NextResponse.json(
+        { 
+          message: 'שגיאה בקריאת נתוני הטופס',
+          error: formError instanceof Error ? formError.message : 'Unknown error',
+        },
+        { status: 400 }
+      );
+    }
+    
     const files = formData.getAll('files') as File[];
     
     // Get date filters if provided
@@ -233,6 +248,7 @@ export async function POST(request: NextRequest) {
     console.log(`Processed date range: ${startDate?.toISOString()} - ${endDate?.toISOString()}`);
     
     if (files.length === 0) {
+      console.log('No files provided in request');
       return NextResponse.json(
         { message: 'לא נמצאו קבצים' },
         { status: 400 }
@@ -241,6 +257,7 @@ export async function POST(request: NextRequest) {
 
     // Create a response object with progress steps
     const responseWithProgress = (step: string, data: ResponseData = {}, status: number = 200) => {
+      console.log(`Sending response with step: ${step}, status: ${status}`, data);
       return NextResponse.json(
         data,
         { 
@@ -259,27 +276,52 @@ export async function POST(request: NextRequest) {
     // Step 1: Process zip files
     try {
       for (const file of files) {
-        // Extract data from zip file
-        const zipBuffer = await file.arrayBuffer();
-        const zip = new JSZip();
-        await zip.loadAsync(zipBuffer);
+        console.log(`Processing file: ${file.name}, size: ${file.size} bytes`);
         
-        console.log(`Processing ZIP file: ${file.name}`);
+        // Extract data from zip file
+        let zipBuffer;
+        try {
+          zipBuffer = await file.arrayBuffer();
+          console.log(`File ${file.name} converted to ArrayBuffer, size: ${zipBuffer.byteLength} bytes`);
+        } catch (bufferError) {
+          console.error(`Error converting file ${file.name} to ArrayBuffer:`, bufferError);
+          throw new Error(`Failed to read file ${file.name}: ${bufferError instanceof Error ? bufferError.message : 'Unknown error'}`);
+        }
+        
+        const zip = new JSZip();
+        try {
+          await zip.loadAsync(zipBuffer);
+          console.log(`ZIP file ${file.name} loaded successfully`);
+        } catch (zipError) {
+          console.error(`Error loading ZIP file ${file.name}:`, zipError);
+          throw new Error(`Failed to extract ZIP file ${file.name}: ${zipError instanceof Error ? zipError.message : 'Unknown error'}`);
+        }
         
         // Step 2: Filter by date
         // Find and process the chat files (typically _chat.txt)
+        let chatFilesFound = 0;
         for (const fileName in zip.files) {
           if (fileName.endsWith('_chat.txt')) {
-            const chatFileContent = await zip.files[fileName].async('string');
-            console.log(`Found chat file: ${fileName}, size: ${chatFileContent.length} chars`);
+            chatFilesFound++;
+            console.log(`Processing chat file: ${fileName}`);
+            
+            let chatFileContent;
+            try {
+              chatFileContent = await zip.files[fileName].async('string');
+              console.log(`Chat file ${fileName} extracted, size: ${chatFileContent.length} chars`);
+            } catch (extractError) {
+              console.error(`Error extracting chat file ${fileName}:`, extractError);
+              continue; // Skip this file but continue with others
+            }
             
             // Split by lines and process each line
             const lines = chatFileContent.split('\n');
-            console.log(`Total lines in chat: ${lines.length}`);
+            console.log(`Total lines in chat file ${fileName}: ${lines.length}`);
             
             let currentDate: Date | null = null;
             let currentLine = '';
             let messagesInRange = 0;
+            let messagesWithLinks = 0;
             
             // Step 3: Extract links
             for (let i = 0; i < lines.length; i++) {
@@ -298,7 +340,10 @@ export async function POST(request: NextRequest) {
                   if (isInRange) {
                     messagesInRange++;
                     const linksInLine = currentLine.match(urlPattern) || [];
-                    allLinks.push(...linksInLine);
+                    if (linksInLine.length > 0) {
+                      messagesWithLinks++;
+                      allLinks.push(...linksInLine);
+                    }
                   }
                 }
                 
@@ -319,12 +364,19 @@ export async function POST(request: NextRequest) {
               if (isInRange) {
                 messagesInRange++;
                 const linksInLine = currentLine.match(urlPattern) || [];
-                allLinks.push(...linksInLine);
+                if (linksInLine.length > 0) {
+                  messagesWithLinks++;
+                  allLinks.push(...linksInLine);
+                }
               }
             }
             
-            console.log(`Messages in specified date range: ${messagesInRange}`);
+            console.log(`File ${fileName} stats: messages in range: ${messagesInRange}, messages with links: ${messagesWithLinks}`);
           }
+        }
+        
+        if (chatFilesFound === 0) {
+          console.log(`No chat files found in ZIP file ${file.name}`);
         }
       }
     } catch (error) {
@@ -336,14 +388,16 @@ export async function POST(request: NextRequest) {
       }, 500);
     }
     
-    logTime('File processing', fileProcessingStartTime);
+    const fileProcessingTime = logTime('File processing', fileProcessingStartTime);
+    console.log(`File processing completed in ${fileProcessingTime}ms`);
     
     // Remove duplicates
     const uniqueLinks = [...new Set(allLinks)];
     
-    console.log(`Found ${uniqueLinks.length} unique links`);
+    console.log(`Found ${uniqueLinks.length} unique links from ${allLinks.length} total links`);
     
     if (uniqueLinks.length === 0) {
+      console.log('No links found in the specified date range');
       return responseWithProgress(
         'idle',
         { message: startDate || endDate 
@@ -368,6 +422,26 @@ export async function POST(request: NextRequest) {
     const aiStartTime = Date.now();
     try {
       console.log('Sending request to OpenAI...');
+      console.log(`OpenAI API Key status: Length=${keyLength}, Type=${keyType}, Valid format=${isValidKey}`);
+      
+      // Test OpenAI connection before proceeding
+      const connectionTest = await testOpenAIConnection();
+      if (!connectionTest.success) {
+        console.error('OpenAI connection test failed:', connectionTest.error);
+        return responseWithProgress('idle', { 
+          message: 'שגיאה בחיבור ל-OpenAI',
+          error: connectionTest.error,
+          details: {
+            keyInfo: {
+              length: keyLength,
+              type: keyType,
+              valid: isValidKey
+            }
+          }
+        }, 500);
+      }
+      
+      console.log('OpenAI connection test successful, proceeding with summary generation');
       const summary = await generateSummary(linksToProcess, startDate, endDate);
       const aiTime = logTime('AI processing', aiStartTime);
       console.log('Summary generation successful');
@@ -432,151 +506,173 @@ async function generateSummary(
   startDate: Date | null = null, 
   endDate: Date | null = null
 ): Promise<string> {
-  try {
-    // Get current date for the summary header
-    const today = new Date();
-    
-    // Prepare date information for the summary header
-    let summaryDateInfo = '';
-    
-    if (startDate && endDate) {
-      // If same day, just mention the specific date
-      if (isSameDay(startDate, endDate)) {
-        summaryDateInfo = formatDateForSummary(startDate);
-      } else {
-        summaryDateInfo = `${formatDateForSummary(startDate)}-${formatDateForSummary(endDate)}`;
-      }
-    } else if (startDate) {
-      summaryDateInfo = `החל מ-${formatDateForSummary(startDate)}`;
-    } else if (endDate) {
-      summaryDateInfo = `עד ${formatDateForSummary(endDate)}`;
+  console.log(`Starting generateSummary with ${links.length} links`);
+  const summaryStartTime = Date.now();
+  
+  // Get today's date for the summary
+  const today = new Date();
+  let summaryDateInfo = '';
+  
+  // Format date for summary
+  if (startDate && endDate) {
+    // If same day, just use that date
+    if (isSameDay(startDate, endDate)) {
+      summaryDateInfo = formatDateForSummary(startDate);
     } else {
-      // If no date range specified, use today's date
+      // If date range, use today's date
       summaryDateInfo = formatDateForSummary(today);
     }
-    
-    // Add date range information to the prompt if available
-    let dateRangeInfo = '';
-    if (startDate && endDate) {
-      // If same day, just mention the specific date
-      if (isSameDay(startDate, endDate)) {
-        dateRangeInfo = `מתאריך ${startDate.toLocaleDateString('he-IL')}`;
-      } else {
-        dateRangeInfo = `בין התאריכים ${startDate.toLocaleDateString('he-IL')} ל-${endDate.toLocaleDateString('he-IL')}`;
-      }
-    } else if (startDate) {
-      dateRangeInfo = `החל מתאריך ${startDate.toLocaleDateString('he-IL')}`;
-    } else if (endDate) {
-      dateRangeInfo = `עד לתאריך ${endDate.toLocaleDateString('he-IL')}`;
+  } else {
+    // If no date range specified, use today's date
+    summaryDateInfo = formatDateForSummary(today);
+  }
+  
+  // Add date range information to the prompt if available
+  let dateRangeInfo = '';
+  if (startDate && endDate) {
+    // If same day, just mention the specific date
+    if (isSameDay(startDate, endDate)) {
+      dateRangeInfo = `מתאריך ${startDate.toLocaleDateString('he-IL')}`;
+    } else {
+      dateRangeInfo = `בין התאריכים ${startDate.toLocaleDateString('he-IL')} ל-${endDate.toLocaleDateString('he-IL')}`;
     }
+  } else if (startDate) {
+    dateRangeInfo = `החל מתאריך ${startDate.toLocaleDateString('he-IL')}`;
+  } else if (endDate) {
+    dateRangeInfo = `עד לתאריך ${endDate.toLocaleDateString('he-IL')}`;
+  }
 
-    console.log('Creating OpenAI prompt with links:', links.length);
+  console.log('Creating OpenAI prompt with links:', links.length);
+  console.log('Date range info:', dateRangeInfo || 'None');
 
-    // Strictly limit the number of links to process based on their total length
-    const MAX_CHARS = 10000;
-    let totalChars = 0;
-    const limitedLinks: string[] = [];
+  // Strictly limit the number of links to process based on their total length
+  const MAX_CHARS = 10000;
+  let totalChars = 0;
+  const limitedLinks: string[] = [];
+  
+  for (const link of links) {
+    totalChars += link.length;
     
-    for (const link of links) {
-      totalChars += link.length;
-      
-      if (totalChars > MAX_CHARS) {
-        console.log(`Reached character limit (${MAX_CHARS}), limiting to ${limitedLinks.length} links`);
-        break;
-      }
-      
-      limitedLinks.push(link);
+    if (totalChars > MAX_CHARS) {
+      console.log(`Reached character limit (${MAX_CHARS}), limiting to ${limitedLinks.length} links`);
+      break;
     }
     
-    const prompt = `
-      אני מנהל קהילה של יזמי סולו ואני רוצה לסכם לינקים שפורסמו בקבוצות וואטסאפ שלנו ${dateRangeInfo ? dateRangeInfo : ''}.
-      
-      להלן רשימת הלינקים שפורסמו:
-      ${limitedLinks.join('\n')}
-      
-      אנא צור סיכום מסודר וברור של הלינקים הללו, עם החלוקה הבאה:
-      1. התחל את הסיכום עם כותרת "*סיכום לינקים ליזמי סולו:*"
-      2. מיד אחרי הכותרת, הוסף שורה עם תאריך הסיכום: "תאריך-${summaryDateInfo}"
-      3. חלק את הלינקים לקטגוריות הגיוניות לפי תוכנם (כמו כלים ליזמים, פלטפורמות בנייה, מאמרים, פוסטים וכו')
-      4. עבור כל לינק, תן כותרת קצרה ותיאור מה הוא מכיל ולמה הוא שימושי
-      5. סדר את הלינקים בכל קטגוריה לפי רלוונטיות
-      
-      הנחיות לפורמט: 
-      - הסיכום צריך להיות בעברית, מימין לשמאל
-      - השתמש באסטריקס אחד (*) בהתחלה ובסוף בשביל טקסט מודגש, ולא שניים - למשל: *כותרת* ולא **כותרת**
-      - אל תשתמש במספור (1, 2, 3) בשום מקום בסיכום, במקום זה השתמש במקפים (-) בתחילת כל פריט
-      - כאשר אתה מציג לינק, כתוב תחילה את שם האתר או הכלי מודגש עם כוכבית אחת, לדוגמה: *שם הכלי* - תיאור הכלי.
-      - לאחר מכן השתמש בקו מפריד ואז כתוב את הלינק בשורה נפרדת: "לינק: https://example.com"
-      - אל תשתמש בקו חדש אחרי המילה "לינק:" - כתוב את הלינק באותה שורה
-      - מספר את הקטגוריות (לא את הפריטים) בצורה ברורה ויישר אותן לימין
-      - בנה פסקאות קצרות וברורות
-      - הסיכום צריך להיות קל להעתקה והדבקה לקבוצת וואטסאפ
-    `;
-
-    console.log('Making API call to OpenAI');
+    limitedLinks.push(link);
+  }
+  
+  console.log(`Using ${limitedLinks.length} links in prompt (${totalChars} chars)`);
+  
+  const prompt = `
+    אני מנהל קהילה של יזמי סולו ואני רוצה לסכם לינקים שפורסמו בקבוצות וואטסאפ שלנו ${dateRangeInfo ? dateRangeInfo : ''}.
     
-    try {
-      // First try with GPT-3.5 for speed
-      const response = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo', // Use faster model for production
-        messages: [
-          { role: 'system', content: 'אתה עוזר מועיל המתמחה בארגון וסיכום מידע עבור קבוצות וואטסאפ. כתוב בעברית, מימין לשמאל.' },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.7,
-        max_tokens: 2000, // Reduce tokens for faster response
-      });
+    להלן רשימת הלינקים שפורסמו:
+    ${limitedLinks.join('\n')}
+    
+    אנא צור סיכום מסודר וברור של הלינקים הללו, עם החלוקה הבאה:
+    1. התחל את הסיכום עם כותרת "*סיכום לינקים ליזמי סולו:*"
+    2. מיד אחרי הכותרת, הוסף שורה עם תאריך הסיכום: "תאריך-${summaryDateInfo}"
+    3. חלק את הלינקים לקטגוריות הגיוניות לפי תוכנם (כמו כלים ליזמים, פלטפורמות בנייה, מאמרים, פוסטים וכו')
+    4. עבור כל לינק, תן כותרת קצרה ותיאור מה הוא מכיל ולמה הוא שימושי
+    5. סדר את הלינקים בכל קטגוריה לפי רלוונטיות
+    
+    הנחיות לפורמט: 
+    - הסיכום צריך להיות בעברית, מימין לשמאל
+    - השתמש באסטריקס אחד (*) בהתחלה ובסוף בשביל טקסט מודגש, ולא שניים - למשל: *כותרת* ולא **כותרת**
+    - אל תשתמש במספור (1, 2, 3) בשום מקום בסיכום, במקום זה השתמש במקפים (-) בתחילת כל פריט
+    - כאשר אתה מציג לינק, כתוב תחילה את שם האתר או הכלי מודגש עם כוכבית אחת, לדוגמה: *שם הכלי* - תיאור הכלי.
+    - לאחר מכן השתמש בקו מפריד ואז כתוב את הלינק בשורה נפרדת: "לינק: https://example.com"
+    - אל תשתמש בקו חדש אחרי המילה "לינק:" - כתוב את הלינק באותה שורה
+    - מספר את הקטגוריות (לא את הפריטים) בצורה ברורה ויישר אותן לימין
+    - בנה פסקאות קצרות וברורות
+    - הסיכום צריך להיות קל להעתקה והדבקה לקבוצת וואטסאפ
+  `;
+
+  console.log('Making API call to OpenAI');
+  console.log(`Prompt length: ${prompt.length} characters`);
+  
+  try {
+    console.log('Attempting OpenAI API call with gpt-3.5-turbo');
+    const apiCallStartTime = Date.now();
+    
+    // First try with GPT-3.5 for speed
+    const response = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo', // Use faster model for production
+      messages: [
+        { role: 'system', content: 'אתה עוזר מועיל המתמחה בארגון וסיכום מידע עבור קבוצות וואטסאפ. כתוב בעברית, מימין לשמאל.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.7,
+      max_tokens: 2000, // Reduce tokens for faster response
+    });
+    
+    const apiCallTime = Date.now() - apiCallStartTime;
+    console.log(`OpenAI API call succeeded in ${apiCallTime}ms`);
+    console.log(`Response tokens: ${response.usage?.total_tokens || 'unknown'}`);
+    
+    const totalTime = Date.now() - summaryStartTime;
+    console.log(`Total summary generation time: ${totalTime}ms`);
+    
+    return response.choices[0].message.content || 'לא הצלחתי לייצר סיכום';
+  } catch (error) {
+    console.error('Error in OpenAI API call:', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      type: error instanceof Error ? error.constructor.name : 'Unknown',
+      code: error instanceof Error && 'code' in error ? (error as OpenAIError).code : 'No code',
+      status: error instanceof Error && 'status' in error ? (error as OpenAIError).status : 'No status'
+    });
+    
+    // If we get a timeout error, use a much simpler prompt
+    if (error instanceof Error && 
+        (error.message.includes('timeout') || 
+        ('code' in error && (error as OpenAIError).code === 'ETIMEDOUT'))) {
       
-      console.log('OpenAI API call succeeded');
+      console.log('Timeout occurred, trying with simplified prompt');
       
-      return response.choices[0].message.content || 'לא הצלחתי לייצר סיכום';
-    } catch (error) {
-      console.error('Error in OpenAI API call:', error);
-      
-      // If we get a timeout error, use a much simpler prompt
-      if (error instanceof Error && 
-          (error.message.includes('timeout') || 
-          ('code' in error && (error as OpenAIError).code === 'ETIMEDOUT'))) {
+      try {
+        console.log('Attempting fallback with simplified prompt');
+        const fallbackStartTime = Date.now();
         
-        console.log('Timeout occurred, trying with simplified prompt');
+        // Use a bare minimum approach
+        const simplifiedPrompt = `סכם את הלינקים הבאים בקצרה:
+          ${limitedLinks.slice(0, 20).join('\n')}
+          
+          התחל את הסיכום עם: "*סיכום לינקים ליזמי סולו:*"
+          בשורה השניה הוסף: "תאריך-${summaryDateInfo}"
+        `;
         
-        try {
-          // Use a bare minimum approach
-          const simplifiedPrompt = `סכם את הלינקים הבאים בקצרה:
-            ${limitedLinks.slice(0, 20).join('\n')}
-            
-            התחל את הסיכום עם: "*סיכום לינקים ליזמי סולו:*"
-            בשורה השניה הוסף: "תאריך-${summaryDateInfo}"
-          `;
-          
-          const fallbackResponse = await openai.chat.completions.create({
-            model: 'gpt-3.5-turbo',
-            messages: [
-              { role: 'system', content: 'תן תשובה קצרה בעברית.' },
-              { role: 'user', content: simplifiedPrompt }
-            ],
-            temperature: 0.5,
-            max_tokens: 1000,
-          });
-          
-          return fallbackResponse.choices[0].message.content || 'לא הצלחתי לייצר סיכום';
-        } catch (_) {
-          // If even the simplified approach fails, return a basic message
-          return `*סיכום לינקים ליזמי סולו:*
+        console.log(`Simplified prompt length: ${simplifiedPrompt.length} characters`);
+        
+        const fallbackResponse = await openai.chat.completions.create({
+          model: 'gpt-3.5-turbo',
+          messages: [
+            { role: 'system', content: 'תן תשובה קצרה בעברית.' },
+            { role: 'user', content: simplifiedPrompt }
+          ],
+          temperature: 0.5,
+          max_tokens: 1000,
+        });
+        
+        const fallbackTime = Date.now() - fallbackStartTime;
+        console.log(`Fallback API call succeeded in ${fallbackTime}ms`);
+        
+        return fallbackResponse.choices[0].message.content || 'לא הצלחתי לייצר סיכום';
+      } catch (fallbackError) {
+        console.error('Even fallback approach failed:', fallbackError);
+        
+        // If even the simplified approach fails, return a basic message
+        console.log('Returning basic formatted links as fallback');
+        return `*סיכום לינקים ליזמי סולו:*
 תאריך-${summaryDateInfo}
 
 *לינקים שנמצאו:*
 ${limitedLinks.slice(0, 10).map(link => `- ${link}`).join('\n')}
 
 (הסיכום נכשל עקב עומס - הצגת לינקים בלבד)`;
-        }
       }
-      
-      // Re-throw the error with more context
-      throw new Error(`OpenAI API error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  } catch (error) {
-    console.error('Error in generateSummary function:', error);
-    throw error; // Re-throw to be handled by the caller
+    
+    // Re-throw the error with more context
+    throw new Error(`OpenAI API error: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 } 

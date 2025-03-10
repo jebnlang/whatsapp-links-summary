@@ -6,20 +6,20 @@ import "react-datepicker/dist/react-datepicker.css";
 
 type ProcessStep = 'idle' | 'uploading' | 'filtering' | 'extracting' | 'analyzing' | 'complete';
 
-// Enhanced error interface
+// Define interface for API error responses
 interface ApiError {
-  message: string;
+  message?: string;
   error?: string;
   details?: unknown;
 }
 
 export default function Home() {
   const [files, setFiles] = useState<File[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState<boolean>(false);
   const [processStep, setProcessStep] = useState<ProcessStep>('idle');
   const [summary, setSummary] = useState<string>("");
   const [error, setError] = useState<string>("");
-  const [errorDetails, setErrorDetails] = useState<string>("");
+  const [errorDetails, setErrorDetails] = useState<ApiError | null>(null);
   const [startDate, setStartDate] = useState<Date | null>(null);
   const [endDate, setEndDate] = useState<Date | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
@@ -103,10 +103,10 @@ export default function Home() {
       setError("אנא העלה לפחות קובץ זיפ אחד");
       return;
     }
-
+    
     setLoading(true);
     setError("");
-    setErrorDetails("");
+    setErrorDetails(null);
     setSummary("");
     setProcessStep('uploading');
     
@@ -114,7 +114,7 @@ export default function Home() {
     files.forEach((file) => {
       formData.append(`files`, file);
     });
-
+    
     // Add date filters to the form data if selected
     if (startDate) {
       formData.append('startDate', startDate.toISOString());
@@ -123,64 +123,78 @@ export default function Home() {
     if (endDate) {
       formData.append('endDate', endDate.toISOString());
     }
-
+    
     try {
+      console.log('Sending request to /api/analyze');
       // Start the process
       const response = await fetch("/api/analyze", {
         method: "POST",
         body: formData,
       });
-
+      
+      console.log(`Response status: ${response.status}`);
+      
       if (!response.ok) {
+        console.error('Error response from server:', response.status, response.statusText);
+        
         let errorMessage = "שגיאה בעיבוד הקבצים";
-        let errorDetailsMessage = "";
         
         try {
           // Try to parse the error response as JSON
           const errorData = await response.json() as ApiError;
+          console.error('Error details:', errorData);
           
           if (errorData.message) {
             errorMessage = errorData.message;
           }
           
-          if (errorData.error) {
-            errorDetailsMessage = `Error: ${errorData.error}`;
-          }
-          
-          if (errorData.details) {
-            errorDetailsMessage += `\nDetails: ${JSON.stringify(errorData.details, null, 2)}`;
-          }
-        } catch (_) {
+          setErrorDetails(errorData);
+        } catch (parseError) {
           // If we can't parse the response as JSON, use the status text
+          console.error('Failed to parse error response:', parseError);
           errorMessage = `שגיאה ${response.status}: ${response.statusText}`;
           
           // Try to get the text response
           try {
             const textResponse = await response.text();
-            errorDetailsMessage = textResponse;
-          } catch (_) {
-            errorDetailsMessage = "לא ניתן לקרוא את פרטי השגיאה";
+            console.error('Error response text:', textResponse);
+            setErrorDetails({
+              error: textResponse
+            });
+          } catch (textError) {
+            console.error('Failed to get error text:', textError);
           }
         }
         
         setError(errorMessage);
-        setErrorDetails(errorDetailsMessage);
         setProcessStep('idle');
         setLoading(false);
         return;
       }
-
+      
       // Success, set final state
       setProcessStep('complete');
       const data = await response.json();
-      setSummary(data.summary);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "שגיאה לא ידועה";
+      console.log('Response data:', data);
+      
+      if (data.summary) {
+        setSummary(data.summary);
+      } else if (data.message) {
+        setError(data.message);
+        setErrorDetails(data);
+      } else {
+        setError('התקבלה תשובה לא תקינה מהשרת');
+        setErrorDetails(data);
+      }
+    } catch (error) {
+      console.error('Error in handleSubmit:', error);
+      const errorMessage = error instanceof Error ? error.message : "שגיאה לא ידועה";
       setError(errorMessage);
       
-      if (err instanceof Error) {
-        setErrorDetails(err.stack || "");
-      }
+      setErrorDetails({
+        error: error instanceof Error ? error.message : 'Unknown error',
+        details: error
+      });
       
       setProcessStep('idle');
     } finally {
@@ -206,6 +220,20 @@ export default function Home() {
     extracting: "מחלץ לינקים...",
     analyzing: "מנתח ומסכם לינקים עם בינה מלאכותית...",
     complete: "הושלם בהצלחה!"
+  };
+
+  // Fix the errorDetails rendering in the JSX
+  const renderErrorDetails = () => {
+    if (!errorDetails) return null;
+    
+    return (
+      <div className="mt-4 p-4 bg-red-100 text-red-900 rounded-md">
+        <p className="font-bold mb-2">פרטי שגיאה (למפתחים):</p>
+        <pre className="bg-red-950 p-3 rounded overflow-auto text-xs max-h-40">
+          {JSON.stringify(errorDetails, null, 2)}
+        </pre>
+      </div>
+    );
   };
 
   return (
@@ -354,14 +382,7 @@ export default function Home() {
           <p className="font-bold mb-2">שגיאה:</p>
           <p>{error}</p>
           
-          {errorDetails && (
-            <div className="mt-4">
-              <p className="font-bold mb-2">פרטי שגיאה (למפתחים):</p>
-              <pre className="bg-red-950 p-3 rounded overflow-auto text-xs max-h-40">
-                {errorDetails}
-              </pre>
-            </div>
-          )}
+          {renderErrorDetails()}
         </div>
       )}
 
