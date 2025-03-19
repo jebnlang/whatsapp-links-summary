@@ -25,6 +25,7 @@ export default function Home() {
   const [copySuccess, setCopySuccess] = useState(false);
   const [dateRangeText, setDateRangeText] = useState<string>("");
   const [isSameDaySelected, setIsSameDaySelected] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   // Client-side only operations
   useEffect(() => {
@@ -126,6 +127,8 @@ export default function Home() {
     
     try {
       console.log('Sending request to /api/analyze');
+      setProcessStep('uploading');
+      
       // Start the process
       const response = await fetch("/api/analyze", {
         method: "POST",
@@ -138,6 +141,11 @@ export default function Home() {
         console.error('Error response from server:', response.status, response.statusText);
         
         let errorMessage = "שגיאה בעיבוד הקבצים";
+        let isNotFoundError = response.status === 404;
+        
+        // Always set loading to false when an error occurs
+        setLoading(false);
+        setProcessStep('idle');
         
         try {
           // Try to parse the error response as JSON
@@ -148,13 +156,19 @@ export default function Home() {
             errorMessage = errorData.message;
           }
           
+          // Store additional details for display
           setErrorDetails(errorData);
+          
+          // Handle 404 errors (no links or chat files found) by showing a user-friendly message
+          if (isNotFoundError) {
+            console.log('Handling as a user-friendly 404 error (no links found)');
+            setError(errorMessage);
+            return; // Exit early after setting the error message
+          }
         } catch (parseError) {
-          // If we can't parse the response as JSON, use the status text
           console.error('Failed to parse error response:', parseError);
           errorMessage = `שגיאה ${response.status}: ${response.statusText}`;
           
-          // Try to get the text response
           try {
             const textResponse = await response.text();
             console.error('Error response text:', textResponse);
@@ -167,9 +181,7 @@ export default function Home() {
         }
         
         setError(errorMessage);
-        setProcessStep('idle');
-        setLoading(false);
-        return;
+        return; // Stop further execution
       }
       
       // Success, set final state
@@ -236,9 +248,120 @@ export default function Home() {
     );
   };
 
+  // Error message section with improved guidance
+  const renderErrorMessage = () => {
+    if (!error) return null;
+    
+    // Check if the error is about missing chat files or links
+    const isMissingFiles = error.includes('לא נמצאו לינקים') || error.includes('קבצים');
+    
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-md p-4 my-4">
+        <div className="flex items-start">
+          <div className="flex-shrink-0">
+            <svg className="h-5 w-5 text-red-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+            </svg>
+          </div>
+          <div className="mr-3 w-full">
+            <h3 className="text-sm font-medium text-red-800">{error}</h3>
+            
+            {isMissingFiles && (
+              <div className="mt-2">
+                <button 
+                  onClick={() => setShowHelp(true)}
+                  className="text-sm text-blue-600 hover:text-blue-800 font-medium underline"
+                >
+                  הצג הנחיות ליצוא צ'אט מוואטסאפ
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+  
+  // WhatsApp export help dialog
+  const renderHelpDialog = () => {
+    if (!showHelp) return null;
+    
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full p-6 relative overflow-y-auto max-h-[90vh]">
+          <button 
+            onClick={() => setShowHelp(false)}
+            className="absolute top-4 right-4 text-gray-500 hover:text-gray-700"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          
+          <h2 className="text-xl font-bold mb-4 text-right">איך לייצא צ'אט מוואטסאפ</h2>
+          
+          <div className="text-right space-y-4">
+            <p className="font-medium">כדי שהכלי יעבוד, צריך לייצא את הצ'אט מוואטסאפ בפורמט הנכון:</p>
+            
+            <div className="border-r-2 border-blue-500 pr-4">
+              <h3 className="font-bold text-lg">בטלפון נייד:</h3>
+              <ol className="list-decimal list-inside space-y-2 pr-4">
+                <li>פתח את הצ'אט שברצונך לייצא</li>
+                <li>הקש על שלוש הנקודות (⋮) בפינה הימנית העליונה</li>
+                <li>בחר <strong>עוד</strong> {'>'}  <strong>ייצא צ'אט</strong></li>
+                <li>בחר <strong>ללא מדיה</strong> (אלא אם תרצה גם תמונות וסרטונים)</li>
+                <li>הקובץ יישמר ב<strong>קבצים</strong> או <strong>הורדות</strong> בטלפון</li>
+                <li>העבר את הקובץ למחשב ועלה אותו לכלי כמו שהוא (בפורמט ZIP)</li>
+              </ol>
+            </div>
+            
+            <div className="border-r-2 border-green-500 pr-4">
+              <h3 className="font-bold text-lg">בווטסאפ ווב (מהמחשב):</h3>
+              <ol className="list-decimal list-inside space-y-2 pr-4">
+                <li>פתח את הצ'אט שברצונך לייצא</li>
+                <li>לחץ על שלוש הנקודות (⋮) ליד שם הצ'אט</li>
+                <li>בחר <strong>ייצא צ'אט</strong></li>
+                <li>בחר <strong>ללא מדיה</strong></li>
+                <li>הקובץ יישמר בתיקיית <strong>הורדות</strong> במחשב</li>
+                <li>עלה את קובץ ה-ZIP לכלי בלי לשנות אותו</li>
+              </ol>
+            </div>
+            
+            <div className="bg-yellow-50 p-4 rounded">
+              <p className="font-bold">חשוב לדעת:</p>
+              <ul className="list-disc list-inside space-y-1 pr-4">
+                <li>אל תשנו את שם הקובץ לאחר הייצוא</li>
+                <li>אל תחלצו את קובץ ה-ZIP - עלו אותו כמו שהוא</li>
+                <li>הכלי תומך בכל פורמט ייצוא וואטסאפ עם תבניות תאריך כגון:
+                  <ul className="list-disc list-inside space-y-1 pr-8 mt-1 text-gray-700">
+                    <li dir="ltr">[25/03/2024, 14:30:45]</li>
+                    <li dir="ltr">22.9.2024, 14:33 -</li>
+                  </ul>
+                </li>
+                <li>אם אתם מקבלים שגיאה, נסו לייצא שוב מהטלפון הנייד</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="mt-6 flex justify-end">
+            <button
+              onClick={() => setShowHelp(false)}
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+            >
+              הבנתי
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <main dir="rtl" className="min-h-screen p-4 md:p-8 lg:p-12 max-w-4xl mx-auto bg-black text-white">
       <h1 className="text-3xl font-bold mb-8 text-center text-white">סיכום לינקים מקבוצות וואטסאפ</h1>
+      
+      {/* Add the help dialog */}
+      {renderHelpDialog()}
       
       <div className="bg-gray-800 shadow-md rounded-lg p-6 mb-8 border border-gray-700">
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -377,14 +500,8 @@ export default function Home() {
         </div>
       )}
 
-      {error && (
-        <div className="bg-red-900 text-white p-4 rounded-md mb-8 border border-red-700">
-          <p className="font-bold mb-2">שגיאה:</p>
-          <p>{error}</p>
-          
-          {renderErrorDetails()}
-        </div>
-      )}
+      {/* Improved error message rendering */}
+      {error && renderErrorMessage()}
 
       {summary && (
         <div className="bg-gray-800 shadow-md rounded-lg p-6 border border-gray-700">

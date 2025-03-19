@@ -91,11 +91,18 @@ function logTime(label: string, startTime: number) {
 // Regex pattern to find links
 const urlPattern = /(https?:\/\/[^\s]+)/g;
 
-// Regex pattern to match WhatsApp date format
-// Example: [3/10/24, 2:34:56 PM]
-const datePattern = /\[(\d{1,2}\/\d{1,2}\/\d{2,4}),\s*(\d{1,2}:\d{1,2}(?::\d{1,2})?\s*(?:AM|PM)?)\]/;
+// Updated regex pattern to match multiple WhatsApp date formats
+// Supports formats like:
+// [31/12/2023, 23:45:67]
+// [12/31/23, 11:45 PM]
+// [2023-12-31, 23:45:67]
+// [31.12.2023, 23:45]
+// And now also formats without brackets:
+// 22.9.2024, 14:33 - ...
+// 10.9.2024, 12:17 - ...
+const datePattern = /(?:\[)?(\d{1,4}[\.\/\-]\d{1,2}[\.\/\-]\d{1,4}),\s*(\d{1,2}:\d{1,2}(?::\d{1,2})?\s*(?:AM|PM)?)(?:\])?(?:\s*-)?/i;
 
-// Extracts date from a WhatsApp message line
+// Extracts date from a WhatsApp message line with improved parsing
 function extractDateFromMessage(messageLine: string): Date | null {
   const match = messageLine.match(datePattern);
   if (!match) return null;
@@ -103,12 +110,63 @@ function extractDateFromMessage(messageLine: string): Date | null {
   const dateStr = match[1];
   const timeStr = match[2];
   
-  // Parse date parts - format could be MM/DD/YY or DD/MM/YY depending on locale
-  // We'll assume DD/MM/YY format as common in many countries
-  const [day, month, year] = dateStr.split('/').map(Number);
+  console.log(`Parsing date: ${dateStr}, time: ${timeStr}`);
+  
+  let day: number, month: number, year: number;
+  
+  // Check what date format we have
+  if (dateStr.includes('-')) {
+    // Format: YYYY-MM-DD or DD-MM-YYYY
+    const parts = dateStr.split('-');
+    if (parts[0].length === 4) {
+      // YYYY-MM-DD
+      year = parseInt(parts[0], 10);
+      month = parseInt(parts[1], 10);
+      day = parseInt(parts[2], 10);
+    } else {
+      // DD-MM-YYYY
+      day = parseInt(parts[0], 10);
+      month = parseInt(parts[1], 10);
+      year = parseInt(parts[2], 10);
+    }
+  } else if (dateStr.includes('.')) {
+    // Format: DD.MM.YYYY
+    const parts = dateStr.split('.');
+    day = parseInt(parts[0], 10);
+    month = parseInt(parts[1], 10);
+    year = parseInt(parts[2], 10);
+  } else {
+    // Format: DD/MM/YYYY or MM/DD/YYYY
+    const parts = dateStr.split('/');
+    
+    // Heuristic: if middle number is > 12, it's day in DD/MM/YY
+    // If first number is > 12, it's day in DD/MM/YY
+    // Otherwise assume MM/DD/YY (US format)
+    const firstNumber = parseInt(parts[0], 10);
+    const middleNumber = parseInt(parts[1], 10);
+    
+    if (middleNumber > 12 || firstNumber > 12) {
+      day = firstNumber;
+      month = middleNumber;
+      year = parseInt(parts[2], 10);
+    } else {
+      // US format MM/DD/YY - less common but possible
+      month = firstNumber;
+      day = middleNumber;
+      year = parseInt(parts[2], 10);
+    }
+  }
   
   // Convert 2-digit year to 4-digit year
-  const fullYear = year < 100 ? (year < 50 ? 2000 + year : 1900 + year) : year;
+  if (year < 100) {
+    year = year < 50 ? 2000 + year : 1900 + year;
+  }
+  
+  // Validate the date components
+  if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1900 || year > 2100) {
+    console.log(`Invalid date components: day=${day}, month=${month}, year=${year}`);
+    return null;
+  }
   
   // Parse time
   let hour = 0, minute = 0, second = 0;
@@ -134,9 +192,28 @@ function extractDateFromMessage(messageLine: string): Date | null {
     } else {
       second = parseInt(secondPart, 10);
     }
+  } else if (timeParts[1].includes('AM') || timeParts[1].includes('PM')) {
+    // Handle formats like "11:45 PM"
+    const minutePart = timeParts[1].split(' ')[0];
+    minute = parseInt(minutePart, 10);
+    
+    // Adjust hour for AM/PM
+    if (timeParts[1].includes('PM') && hour < 12) {
+      hour += 12;
+    }
+    if (timeParts[1].includes('AM') && hour === 12) {
+      hour = 0;
+    }
   }
   
-  return new Date(fullYear, month - 1, day, hour, minute, second);
+  try {
+    const parsedDate = new Date(year, month - 1, day, hour, minute, second);
+    console.log(`Parsed date: ${parsedDate.toISOString()}`);
+    return parsedDate;
+  } catch (e) {
+    console.error('Error creating date object:', e);
+    return null;
+  }
 }
 
 // Utility function to set a date to the start of the day (00:00:00)
@@ -270,8 +347,11 @@ export async function POST(request: NextRequest) {
     };
 
     // Process all files
-    const fileProcessingStartTime = Date.now();
     const allLinks: string[] = [];
+    const fileProcessingStartTime = Date.now();
+    
+    // Track total chat files across all processed ZIP files
+    let totalChatFilesFound = 0;
     
     // Step 1: Process zip files
     try {
@@ -292,6 +372,18 @@ export async function POST(request: NextRequest) {
         try {
           await zip.loadAsync(zipBuffer);
           console.log(`ZIP file ${file.name} loaded successfully`);
+          
+          // NEW: Log ZIP file structure to help diagnose issues
+          console.log(`ZIP file structure for ${file.name}:`);
+          const fileList = Object.keys(zip.files);
+          console.log(`Total files in ZIP: ${fileList.length}`);
+          
+          // Log the first 10 files to see what's in the archive
+          console.log(`First ${Math.min(10, fileList.length)} files in ZIP:`, fileList.slice(0, 10));
+          
+          // Check if there are any text files that might contain chat data
+          const textFiles = fileList.filter(name => name.endsWith('.txt'));
+          console.log(`Text files found in ZIP: ${textFiles.length}`, textFiles);
         } catch (zipError) {
           console.error(`Error loading ZIP file ${file.name}:`, zipError);
           throw new Error(`Failed to extract ZIP file ${file.name}: ${zipError instanceof Error ? zipError.message : 'Unknown error'}`);
@@ -300,10 +392,18 @@ export async function POST(request: NextRequest) {
         // Step 2: Filter by date
         // Find and process the chat files (typically _chat.txt)
         let chatFilesFound = 0;
+        
+        // Log all text files to understand what we're working with
+        const allTextFiles = Object.keys(zip.files).filter(name => 
+          name.endsWith('.txt') || name.toLowerCase().includes('chat'));
+        
+        console.log(`All potential text files in ZIP: ${allTextFiles.length}`, allTextFiles);
+
+        // First try with the standard pattern: *_chat.txt
         for (const fileName in zip.files) {
           if (fileName.endsWith('_chat.txt')) {
             chatFilesFound++;
-            console.log(`Processing chat file: ${fileName}`);
+            console.log(`Processing chat file (standard format): ${fileName}`);
             
             let chatFileContent;
             try {
@@ -374,9 +474,153 @@ export async function POST(request: NextRequest) {
             console.log(`File ${fileName} stats: messages in range: ${messagesInRange}, messages with links: ${messagesWithLinks}`);
           }
         }
+
+        // If no standard files found, try with a more flexible approach
+        if (chatFilesFound === 0) {
+          console.log('No standard chat files found, trying alternative formats');
+          
+          // Try with other common WhatsApp export patterns
+          for (const fileName in zip.files) {
+            // Check for any text file that might be a chat export
+            if ((fileName.endsWith('.txt') && 
+                (fileName.toLowerCase().includes('whatsapp') || 
+                 fileName.toLowerCase().includes('chat') || 
+                 fileName.toLowerCase().includes('צאט'))) || // Hebrew word for chat
+                (fileName.includes('.txt'))) {
+              
+              // Let's check the content to see if it looks like a WhatsApp chat
+              try {
+                const content = await zip.files[fileName].async('string');
+                const lines = content.split('\n').slice(0, 10); // Look at first 10 lines
+                
+                // Check if at least one line matches the WhatsApp date format
+                const hasWhatsAppFormat = lines.some(line => {
+                  const matches = line.match(datePattern);
+                  if (matches) {
+                    console.log(`Found date format match in line: "${line.substring(0, 50)}..."`);
+                    console.log(`Date parts: "${matches[1]}" and time: "${matches[2]}"`);
+                    return true;
+                  }
+                  return false;
+                });
+                
+                if (hasWhatsAppFormat) {
+                  chatFilesFound++;
+                  console.log(`Processing chat file (alternative format): ${fileName}`);
+                  
+                  // Split by lines and process each line
+                  const allLines = content.split('\n');
+                  console.log(`Total lines in chat file ${fileName}: ${allLines.length}`);
+                  
+                  let currentDate: Date | null = null;
+                  let currentLine = '';
+                  let messagesInRange = 0;
+                  let messagesWithLinks = 0;
+                  
+                  // Step 3: Extract links
+                  for (let i = 0; i < allLines.length; i++) {
+                    const line = allLines[i];
+                    
+                    // Check if line starts with a date
+                    const dateMatch = line.match(datePattern);
+                    
+                    if (dateMatch) {
+                      // Sample log for first few matches to debug date parsing
+                      if (i < 5 || i % 1000 === 0) {
+                        console.log(`Found message at line ${i}: "${line.substring(0, 50)}..."`);
+                      }
+                      // Process previous line if it exists and contains links
+                      if (currentLine && currentDate) {
+                        // Check if the message is within the date range
+                        const isInRange = (!startDate || currentDate >= startDate) && 
+                                          (!endDate || currentDate <= endDate);
+                        
+                        if (isInRange) {
+                          messagesInRange++;
+                          const linksInLine = currentLine.match(urlPattern) || [];
+                          if (linksInLine.length > 0) {
+                            messagesWithLinks++;
+                            allLinks.push(...linksInLine);
+                          }
+                        }
+                      }
+                      
+                      // Extract the new date and start a new message
+                      currentDate = extractDateFromMessage(line);
+                      currentLine = line;
+                    } else {
+                      // Continue current message
+                      currentLine += ' ' + line;
+                    }
+                  }
+                  
+                  // Process the last line if necessary
+                  if (currentLine && currentDate) {
+                    const isInRange = (!startDate || currentDate >= startDate) && 
+                                      (!endDate || currentDate <= endDate);
+                    
+                    if (isInRange) {
+                      messagesInRange++;
+                      const linksInLine = currentLine.match(urlPattern) || [];
+                      if (linksInLine.length > 0) {
+                        messagesWithLinks++;
+                        allLinks.push(...linksInLine);
+                      }
+                    }
+                  }
+                  
+                  console.log(`File ${fileName} stats: messages in range: ${messagesInRange}, messages with links: ${messagesWithLinks}`);
+                } else {
+                  console.log(`File ${fileName} doesn't appear to be a WhatsApp chat (no date patterns found)`);
+                }
+              } catch (e) {
+                console.error(`Error reading file ${fileName}:`, e);
+              }
+            }
+          }
+        }
         
         if (chatFilesFound === 0) {
           console.log(`No chat files found in ZIP file ${file.name}`);
+          
+          // NEW: Enhanced error logging to help diagnose the issue
+          console.log(`WARNING: No WhatsApp chat files found in ZIP file ${file.name}`);
+          console.log(`Expected file pattern: *_chat.txt or other WhatsApp export formats`);
+          
+          // Try to find any TXT files and log their names to help identify the format
+          const allTextFiles = Object.keys(zip.files).filter(name => 
+            name.endsWith('.txt') || name.toLowerCase().includes('chat'));
+          
+          if (allTextFiles.length > 0) {
+            console.log(`Found ${allTextFiles.length} potential text files that might contain chat data:`, allTextFiles);
+            
+            // NEW: For the first text file found, check content format
+            try {
+              const firstTextFile = allTextFiles[0];
+              const content = await zip.files[firstTextFile].async('string');
+              const lines = content.split('\n');
+              const firstFewLines = lines.slice(0, 5).join('\n');
+              
+              console.log(`First few lines of ${firstTextFile} to help diagnose format:`);
+              console.log(firstFewLines);
+              
+              // Check if the first line matches the expected date format
+              const hasDateFormat = datePattern.test(lines[0]);
+              console.log(`First line contains WhatsApp date format? ${hasDateFormat}`);
+              
+              if (!hasDateFormat) {
+                console.log(`HINT: Expected date format example: [25/03/2024, 14:30:45]`);
+              }
+            } catch (e) {
+              console.error(`Could not read content of potential text file:`, e);
+            }
+          } else {
+            console.log(`No text files or chat-related files found in the ZIP. This may not be a WhatsApp export ZIP.`);
+            console.log(`HINT: WhatsApp export ZIPs should contain a file named '[chat name]_chat.txt'`);
+          }
+        } else {
+          // If chat files were found, add to the total count
+          totalChatFilesFound += chatFilesFound;
         }
       }
     } catch (error) {
@@ -397,12 +641,30 @@ export async function POST(request: NextRequest) {
     console.log(`Found ${uniqueLinks.length} unique links from ${allLinks.length} total links`);
     
     if (uniqueLinks.length === 0) {
-      console.log('No links found in the specified date range');
+      // NEW: Enhanced user-friendly error message with more details
+      const errorMessage = startDate || endDate 
+          ? 'לא נמצאו לינקים בטווח התאריכים שנבחר' 
+          : 'לא נמצאו לינקים בקבצים';
+      
+      console.log(`No links found. Error details:`);
+      console.log(`- Files processed: ${files.length}`);
+      console.log(`- Chat files found: ${totalChatFilesFound}`);
+      console.log(`- Date range: ${startDate?.toISOString()} to ${endDate?.toISOString()}`);
+      console.log(`- Error message to user: ${errorMessage}`);
+      
       return responseWithProgress(
         'idle',
-        { message: startDate || endDate 
-          ? 'לא נמצאו לינקים בטווח התאריכים שנבחר' 
-          : 'לא נמצאו לינקים בקבצים' },
+        { 
+          message: errorMessage,
+          details: {
+            filesProcessed: files.length,
+            chatFilesFound: totalChatFilesFound,
+            dateRange: {
+              start: startDate?.toISOString(),
+              end: endDate?.toISOString()
+            }
+          }
+        },
         404
       );
     }
