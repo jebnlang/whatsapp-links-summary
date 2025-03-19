@@ -252,6 +252,13 @@ interface ResponseData {
   details?: unknown;
 }
 
+// New interface to store links with their context
+interface LinkWithContext {
+  url: string;
+  messageContext: string;
+  date: Date;
+}
+
 // Define OpenAI error type
 interface OpenAIError extends Error {
   status?: number;
@@ -264,93 +271,56 @@ export const config = {
   maxDuration: 60, // Maximum 60 seconds for paid Vercel plans
 };
 
-export async function POST(request: NextRequest) {
+export async function POST(request: NextRequest): Promise<NextResponse<ResponseData>> {
   const startTime = Date.now();
-  console.log(`API request started at: ${new Date().toISOString()}`);
-  console.log('Request headers:', Object.fromEntries([...request.headers.entries()]));
+  console.log(`Starting file processing at ${new Date().toISOString()}`);
   
   try {
-    console.log('Starting POST request to /api/analyze');
-    
-    // Get form data from the request
-    let formData;
-    try {
-      formData = await request.formData();
-      console.log('FormData parsed successfully');
-    } catch (formError) {
-      console.error('Error parsing form data:', formError);
-      return NextResponse.json(
-        { 
-          message: 'שגיאה בקריאת נתוני הטופס',
-          error: formError instanceof Error ? formError.message : 'Unknown error',
-        },
-        { status: 400 }
-      );
-    }
-    
+    // Extract form data with files
+    const formData = await request.formData();
     const files = formData.getAll('files') as File[];
     
-    // Get date filters if provided
+    // Extract date filters if provided
     const startDateStr = formData.get('startDate') as string | null;
     const endDateStr = formData.get('endDate') as string | null;
     
-    console.log(`Files received: ${files.length}`);
-    console.log(`Date range: ${startDateStr} to ${endDateStr}`);
-    logTime('Request parsing', startTime);
+    console.log(`Files submitted: ${files.length}`);
+    console.log(`Date range: ${startDateStr || 'none'} to ${endDateStr || 'none'}`);
     
-    // Parse date filters
-    let startDate = startDateStr ? new Date(startDateStr) : null;
-    let endDate = endDateStr ? new Date(endDateStr) : null;
+    let startDate: Date | null = null;
+    let endDate: Date | null = null;
     
-    // Adjust dates if both are provided
-    if (startDate && endDate) {
-      // If same day is selected, set start to beginning of day and end to end of day
-      if (isSameDay(startDate, endDate)) {
-        startDate = setToStartOfDay(startDate);
-        endDate = setToEndOfDay(endDate);
-      } else {
-        // If different days, ensure start date is at beginning of day
-        startDate = setToStartOfDay(startDate);
-        // And end date is at end of day
-        endDate = setToEndOfDay(endDate);
-      }
-    } else if (startDate) {
-      // If only start date is provided, set it to beginning of day
+    if (startDateStr) {
+      startDate = new Date(startDateStr);
       startDate = setToStartOfDay(startDate);
-    } else if (endDate) {
-      // If only end date is provided, set it to end of day
-      endDate = setToEndOfDay(endDate);
+      console.log(`Parsed start date: ${startDate.toISOString()}`);
     }
     
-    console.log(`Processed date range: ${startDate?.toISOString()} - ${endDate?.toISOString()}`);
+    if (endDateStr) {
+      endDate = new Date(endDateStr);
+      endDate = setToEndOfDay(endDate);
+      console.log(`Parsed end date: ${endDate.toISOString()}`);
+    }
+    
+    // Helper function to create progress responses
+    const responseWithProgress = (step: string, data: ResponseData, status = 200) => {
+      return NextResponse.json(data, { 
+        status,
+        headers: {
+          'X-Process-Step': step
+        }
+      });
+    };
     
     if (files.length === 0) {
-      console.log('No files provided in request');
-      return NextResponse.json(
-        { message: 'לא נמצאו קבצים' },
-        { status: 400 }
-      );
+      return responseWithProgress('idle', { message: 'לא התקבלו קבצים' }, 400);
     }
-
-    // Create a response object with progress steps
-    const responseWithProgress = (step: string, data: ResponseData = {}, status: number = 200) => {
-      console.log(`Sending response with step: ${step}, status: ${status}`, data);
-      return NextResponse.json(
-        data,
-        { 
-          status,
-          headers: {
-            'X-Process-Step': step
-          }
-        }
-      );
-    };
-
-    // Process all files
-    const allLinks: string[] = [];
+    
     const fileProcessingStartTime = Date.now();
     
-    // Track total chat files across all processed ZIP files
+    // Step 1-3: Process files and extract links
+    // Modified to use array of LinkWithContext instead of string array
+    const allLinksWithContext: LinkWithContext[] = [];
     let totalChatFilesFound = 0;
     
     // Step 1: Process zip files
@@ -442,7 +412,11 @@ export async function POST(request: NextRequest) {
                     const linksInLine = currentLine.match(urlPattern) || [];
                     if (linksInLine.length > 0) {
                       messagesWithLinks++;
-                      allLinks.push(...linksInLine);
+                      allLinksWithContext.push({
+                        url: linksInLine[0] || '',
+                        messageContext: currentLine,
+                        date: currentDate
+                      });
                     }
                   }
                 }
@@ -466,7 +440,11 @@ export async function POST(request: NextRequest) {
                 const linksInLine = currentLine.match(urlPattern) || [];
                 if (linksInLine.length > 0) {
                   messagesWithLinks++;
-                  allLinks.push(...linksInLine);
+                  allLinksWithContext.push({
+                    url: linksInLine[0] || '',
+                    messageContext: currentLine,
+                    date: currentDate
+                  });
                 }
               }
             }
@@ -540,7 +518,11 @@ export async function POST(request: NextRequest) {
                           const linksInLine = currentLine.match(urlPattern) || [];
                           if (linksInLine.length > 0) {
                             messagesWithLinks++;
-                            allLinks.push(...linksInLine);
+                            allLinksWithContext.push({
+                              url: linksInLine[0] || '',
+                              messageContext: currentLine,
+                              date: currentDate
+                            });
                           }
                         }
                       }
@@ -564,7 +546,11 @@ export async function POST(request: NextRequest) {
                       const linksInLine = currentLine.match(urlPattern) || [];
                       if (linksInLine.length > 0) {
                         messagesWithLinks++;
-                        allLinks.push(...linksInLine);
+                        allLinksWithContext.push({
+                          url: linksInLine[0] || '',
+                          messageContext: currentLine,
+                          date: currentDate
+                        });
                       }
                     }
                   }
@@ -636,11 +622,11 @@ export async function POST(request: NextRequest) {
     console.log(`File processing completed in ${fileProcessingTime}ms`);
     
     // Remove duplicates
-    const uniqueLinks = [...new Set(allLinks)];
+    const uniqueLinksWithContext = [...new Set(allLinksWithContext)];
     
-    console.log(`Found ${uniqueLinks.length} unique links from ${allLinks.length} total links`);
+    console.log(`Found ${uniqueLinksWithContext.length} unique links from ${allLinksWithContext.length} total links`);
     
-    if (uniqueLinks.length === 0) {
+    if (uniqueLinksWithContext.length === 0) {
       // NEW: Enhanced user-friendly error message with more details
       const errorMessage = startDate || endDate 
           ? 'לא נמצאו לינקים בטווח התאריכים שנבחר' 
@@ -671,12 +657,12 @@ export async function POST(request: NextRequest) {
 
     // Strictly limit links to ensure processing completes within timeout
     const MAX_LINKS = 30; // Further reduced limit for higher reliability
-    const linksToProcess = uniqueLinks.length > MAX_LINKS 
-      ? uniqueLinks.slice(0, MAX_LINKS) 
-      : uniqueLinks;
+    const linksToProcess = uniqueLinksWithContext.length > MAX_LINKS 
+      ? uniqueLinksWithContext.slice(0, MAX_LINKS) 
+      : uniqueLinksWithContext;
     
-    if (uniqueLinks.length > MAX_LINKS) {
-      console.log(`Limiting links from ${uniqueLinks.length} to ${MAX_LINKS} to prevent timeout`);
+    if (uniqueLinksWithContext.length > MAX_LINKS) {
+      console.log(`Limiting links from ${uniqueLinksWithContext.length} to ${MAX_LINKS} to prevent timeout`);
     }
 
     // Step 4: AI Analysis
@@ -764,7 +750,7 @@ export async function POST(request: NextRequest) {
 }
 
 async function generateSummary(
-  links: string[], 
+  links: LinkWithContext[], 
   startDate: Date | null = null, 
   endDate: Date | null = null
 ): Promise<string> {
@@ -810,10 +796,10 @@ async function generateSummary(
   // Strictly limit the number of links to process based on their total length
   const MAX_CHARS = 10000;
   let totalChars = 0;
-  const limitedLinks: string[] = [];
+  const limitedLinks: LinkWithContext[] = [];
   
   for (const link of links) {
-    totalChars += link.length;
+    totalChars += link.url.length;
     
     if (totalChars > MAX_CHARS) {
       console.log(`Reached character limit (${MAX_CHARS}), limiting to ${limitedLinks.length} links`);
@@ -829,21 +815,28 @@ async function generateSummary(
     אני מנהל קהילה של יזמי סולו ואני רוצה לסכם לינקים שפורסמו בקבוצות וואטסאפ שלנו ${dateRangeInfo ? dateRangeInfo : ''}.
     
     להלן רשימת הלינקים שפורסמו:
-    ${limitedLinks.join('\n')}
+    ${limitedLinks.map(link => {
+      return `- הלינק: ${link.url}
+      - ההודעה המלאה: ${link.messageContext.replace(link.url, '')}
+      - תאריך: ${link.date.toLocaleDateString('he-IL')}
+      - שעה: ${link.date.toLocaleTimeString('he-IL')}`;
+    }).join('\n\n')}
     
     אנא צור סיכום מפורט ושימושי של הלינקים הללו, עם החלוקה הבאה:
-    1. התחל את הסיכום עם כותרת "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה:*"
-    2. מיד אחרי הכותרת, הוסף שורה עם תאריך הסיכום: "תאריך-${summaryDateInfo}"
-    3. חלק את הלינקים לקטגוריות הגיוניות לפי תוכנם (כמו כלים ליזמים, פלטפורמות בנייה, מאמרים, פוסטים וכו')
-    4. עבור כל לינק, תן את המידע הבא במבנה קבוע:
+    1. התחל את הסיכום עם "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות"
+    2. בשורה השנייה, הוסף: "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה:*"
+    3. מיד אחרי הכותרת, הוסף שורה עם ${dateRangeInfo ? `"${dateRangeInfo}"` : `תאריך הסיכום: "תאריך-${summaryDateInfo}"`}
+    4. חלק את הלינקים לקטגוריות הגיוניות לפי תוכנם (כמו כלים ליזמים, פלטפורמות בנייה, מאמרים, פוסטים וכו')
+    5. עבור כל לינק, תן את המידע הבא במבנה קבוע:
        - *שם הכלי/האתר* (בהדגשה) - [סוג הלינק: SaaS, כלי, סרטון, פוסט לינקדאין, מאמר, GitHub וכו']
        - תיאור: משפט קצר ומדויק המסביר את המטרה העיקרית או הפונקציה של הלינק
+       - הקשר ההודעה: תקציר קצר של ההודעה שבה הלינק פורסם (אם רלוונטי)
        - נקודות מפתח:
          • 2-3 נקודות עיקריות המציגות את התכונות, היכולות או התובנות החשובות
        - ערך למשתמש: הסבר ברור מתי, איך או למה הלינק הזה יהיה שימושי לקהל היעד (יזמים, מפתחים, מנהלי מוצר וכו')
        - זמן/מורכבות (אופציונלי): ציין זמן משוער לצפייה/קריאה (לסרטונים/מאמרים) או רמת מורכבות (לכלים/SaaS)
        - לינק: [URL]
-    5. סדר את הלינקים בכל קטגוריה לפי רלוונטיות
+    6. סדר את הלינקים בכל קטגוריה לפי רלוונטיות
     
     הנחיות לפורמט: 
     - הסיכום צריך להיות בעברית, מימין לשמאל
@@ -902,19 +895,24 @@ async function generateSummary(
         
         // Use a bare minimum approach
         const simplifiedPrompt = `סכם את הלינקים הבאים בצורה מובנית ושימושית:
-          ${limitedLinks.slice(0, 20).join('\n')}
+          ${limitedLinks.slice(0, 20).map(link => {
+            return `- הלינק: ${link.url}
+            - ההודעה המלאה: ${link.messageContext.replace(link.url, '')}
+            - תאריך: ${link.date.toLocaleDateString('he-IL')}`;
+          }).join('\n\n')}
           
-          התחל את הסיכום עם: "*סיכום לינקים ליזמי סולו:*"
-          בשורה השניה הוסף: "תאריך-${summaryDateInfo}"
+          התחל את הסיכום עם: "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות"
+          בשורה השנייה, הוסף: "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה:*"
+          בשורה השלישית, הוסף: ${dateRangeInfo ? `"${dateRangeInfo}"` : `"תאריך-${summaryDateInfo}"`}
           
           חלק את הלינקים לקטגוריות הגיוניות.
           
           עבור כל לינק, הצג במבנה הבא:
           - *שם הכלי/האתר* - [סוג הלינק]
           - תיאור: משפט קצר על מטרת הלינק
+          - הקשר ההודעה: תקציר של ההודעה בה פורסם הלינק (אם יש)
           - נקודות מפתח:
-            • תכונה/תובנה עיקרית 1
-            • תכונה/תובנה עיקרית 2
+            • תכונה/תובנה עיקרית אחת
           - ערך למשתמש: למי ומתי הלינק שימושי
           - לינק: [URL]
           
@@ -942,22 +940,26 @@ async function generateSummary(
         
         // If even the simplified approach fails, return a basic message
         console.log('Returning basic formatted links as fallback');
-        return `*סיכום לינקים ליזמי סולו:*
-תאריך-${summaryDateInfo}
+        return `לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות
+
+*סיכום לינקים שפורסמו בקבוצות השונות בקהילה:*
+${dateRangeInfo ? dateRangeInfo : `תאריך-${summaryDateInfo}`}
 
 *לינקים שנמצאו:*
 ${limitedLinks.slice(0, 10).map(link => {
   // Try to extract domain name for a bit more context
   let domain = '';
   try {
-    const url = new URL(link);
+    const url = new URL(link.url);
     domain = url.hostname.replace('www.', '');
   } catch (e) {
     domain = 'אתר';
   }
   return `- *${domain}*
   - תיאור: לינק מקבוצת הוואטסאפ
-  - לינק: ${link}`;
+  - הקשר: ${link.messageContext.replace(link.url, '').substring(0, 100)}${link.messageContext.replace(link.url, '').length > 100 ? '...' : ''}
+  - תאריך: ${link.date.toLocaleDateString('he-IL')}
+  - לינק: ${link.url}`;
 }).join('\n\n')}
 
 (הסיכום המפורט נכשל עקב עומס - הצגת לינקים בלבד)`;
