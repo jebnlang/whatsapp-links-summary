@@ -1,44 +1,21 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
-/node_modules
+<<<<<<< HEAD
+# Dependencies
 node_modules/
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
 npm-debug.log
 yarn-debug.log
 yarn-error.log
 
-# testing
-/coverage
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
-# next.js
-/.next/
-/out/
-.next/
-
-# production
-/build
-build/
+# Build outputs
 dist/
-
-# misc
-.DS_Store
-*.pem
-Thumbs.db
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-debug.log
-*.log
+build/
+.next/
 
 # IDE and Editor files
 .idea/
@@ -46,12 +23,47 @@ debug.log
 *.swp
 *.swo
 
-# env files
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug logs
+debug.log
+*.log 
+=======
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
 .env*
 
 # vercel
@@ -60,3 +72,4 @@ debug.log
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+>>>>>>> 818a1436af4cc1ef81ece302241febd416e49253
