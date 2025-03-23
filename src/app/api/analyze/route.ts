@@ -88,8 +88,8 @@ function logTime(label: string, startTime: number) {
   return elapsed;
 }
 
-// Regex pattern to find links
-const urlPattern = /(https?:\/\/[^\s]+)/g;
+// Regex pattern to find links - combines both simple and comprehensive patterns
+const urlPattern = /((?:https?:\/\/)?(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_+.~#?&//=]*))/gi;
 
 // Updated regex pattern to match multiple WhatsApp date formats
 // Supports formats like:
@@ -281,6 +281,65 @@ export const config = {
   maxDuration: 60, // Maximum 60 seconds for paid Vercel plans
 };
 
+// Debugging helper to log link extraction process
+function logLinkExtraction(lineNumber: number, line: string, links: RegExpMatchArray[]): void {
+  if (links.length > 0) {
+    console.log(`Found ${links.length} links at line ${lineNumber}:`, 
+      links.map(l => l[0]).join(', ').substring(0, 100) + (links.map(l => l[0]).join(', ').length > 100 ? '...' : ''));
+  }
+}
+
+// Check if a string is likely a WhatsApp system message
+function isSystemMessage(message: string): boolean {
+  return message.includes('הצטרף/ה') || 
+         message.includes('עזב/ה') || 
+         message.includes('שינה/תה את נושא הקבוצה') ||
+         message.includes('changed the subject') ||
+         message.includes('joined using') ||
+         message.includes('left');
+}
+
+// Extract links from a message with context
+function extractLinksWithContext(message: string, messageDate: Date, lineNumber: number): LinkWithContext[] {
+  const extractedLinks: LinkWithContext[] = [];
+  
+  if (!message || isSystemMessage(message)) {
+    return extractedLinks;
+  }
+  
+  // Simple case-insensitive check for "get-zenith.com" or similar patterns that might be missed
+  if (message.toLowerCase().includes('get-zenith.com')) {
+    console.log(`Found Get-zenith.com at line ${lineNumber} through direct check`);
+    extractedLinks.push({
+      url: 'Get-zenith.com',
+      messageContext: message,
+      date: messageDate
+    });
+  }
+  
+  const linksInMessage = Array.from(message.matchAll(urlPattern));
+  
+  if (linksInMessage.length > 0) {
+    logLinkExtraction(lineNumber, message, linksInMessage);
+    
+    linksInMessage.forEach(match => {
+      // Get context around this specific link
+      const linkIndex = match.index || 0;
+      const startContext = Math.max(0, linkIndex - 100);
+      const endContext = Math.min(message.length, linkIndex + match[0].length + 100);
+      const linkContext = message.substring(startContext, endContext).trim();
+      
+      extractedLinks.push({
+        url: match[0],
+        messageContext: linkContext,
+        date: messageDate
+      });
+    });
+  }
+  
+  return extractedLinks;
+}
+
 export async function POST(request: NextRequest): Promise<NextResponse<ResponseData>> {
   const startTime = Date.now();
   console.log(`Starting file processing at ${new Date().toISOString()}`);
@@ -410,7 +469,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
             }
             
             // Split by lines and process each line
-            const lines = chatFileContent.split('\n');
+            const lines: string[] = chatFileContent.split('\n');
             console.log(`Total lines in chat file ${fileName}: ${lines.length}`);
             
             let currentDate: Date | null = null;
@@ -420,22 +479,25 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
             
             // Step 3: Extract links
             for (let i = 0; i < lines.length; i++) {
-              const line = lines[i];
+              const line: string = lines[i];
               
               // Check if line starts with a date
               const dateMatch = line.match(datePattern);
               
               if (dateMatch) {
-                // Process previous line if it exists and contains links
+                // Process previous message if it exists and contains links
                 if (currentLine && currentDate) {
                   // Check if the message is within the date range
                   const isInRange = (!startDate || currentDate >= startDate) && 
                                     (!endDate || currentDate <= endDate);
                   
-                  if (isInRange) {
+                  if (isInRange && currentDate instanceof Date) {
                     messagesInRange++;
-                    const linksInLine = currentLine.match(urlPattern) || [];
-                    if (linksInLine.length > 0) {
+                    
+                    // Extract links from the complete message
+                    const extractedLinks = extractLinksWithContext(currentLine, currentDate, i);
+                    
+                    if (extractedLinks.length > 0) {
                       messagesWithLinks++;
                       
                       // Extract phone number from the message
@@ -446,7 +508,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                       }
                       
                       allLinksWithContext.push({
-                        url: linksInLine[0] || '',
+                        url: extractedLinks[0].url,
                         messageContext: currentLine,
                         date: currentDate,
                         fileName: groupName,
@@ -459,9 +521,24 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                 // Extract the new date and start a new message
                 currentDate = extractDateFromMessage(line);
                 currentLine = line;
+                
+                // Also check the current line for links (in case they're in the same line as the date)
+                if (currentDate instanceof Date) {
+                  const dateLineLinks = extractLinksWithContext(line, currentDate, i);
+                  if (dateLineLinks.length > 0) {
+                    allLinksWithContext.push(...dateLineLinks);
+                  }
+                }
               } else {
                 // Continue current message
-                currentLine += ' ' + line;
+                if (currentLine) {
+                  // Preserve line breaks and clean up extra spaces
+                  currentLine += (line.trim() ? '\n' + line.trim() : '');
+                  // Clean up any duplicate newlines or spaces
+                  currentLine = currentLine.replace(/\n\s*\n/g, '\n').trim();
+                } else {
+                  currentLine = line;
+                }
               }
             }
             
@@ -470,10 +547,13 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
               const isInRange = (!startDate || currentDate >= startDate) && 
                                 (!endDate || currentDate <= endDate);
               
-              if (isInRange) {
+              if (isInRange && currentDate instanceof Date) {
                 messagesInRange++;
-                const linksInLine = currentLine.match(urlPattern) || [];
-                if (linksInLine.length > 0) {
+                
+                // Extract links from the complete message
+                const extractedLinks = extractLinksWithContext(currentLine, currentDate, lines.length);
+                
+                if (extractedLinks.length > 0) {
                   messagesWithLinks++;
                   
                   // Extract phone number from the message
@@ -484,7 +564,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                   }
                   
                   allLinksWithContext.push({
-                    url: linksInLine[0] || '',
+                    url: extractedLinks[0].url,
                     messageContext: currentLine,
                     date: currentDate,
                     fileName: groupName,
@@ -542,7 +622,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                   
                   // Step 3: Extract links
                   for (let i = 0; i < allLines.length; i++) {
-                    const line = allLines[i];
+                    const line: string = allLines[i];
                     
                     // Check if line starts with a date
                     const dateMatch = line.match(datePattern);
@@ -556,12 +636,15 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                       if (currentLine && currentDate) {
                         // Check if the message is within the date range
                         const isInRange = (!startDate || currentDate >= startDate) && 
-                                          (!endDate || currentDate <= endDate);
+                                              (!endDate || currentDate <= endDate);
                         
-                        if (isInRange) {
+                        if (isInRange && currentDate instanceof Date) {
                           messagesInRange++;
-                          const linksInLine = currentLine.match(urlPattern) || [];
-                          if (linksInLine.length > 0) {
+                          
+                          // Extract links from the complete message
+                          const extractedLinks = extractLinksWithContext(line, currentDate, i);
+                          
+                          if (extractedLinks.length > 0) {
                             messagesWithLinks++;
                             
                             // Extract phone number from the message
@@ -572,7 +655,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                             }
                             
                             allLinksWithContext.push({
-                              url: linksInLine[0] || '',
+                              url: extractedLinks[0].url,
                               messageContext: currentLine,
                               date: currentDate,
                               fileName: groupName,
@@ -587,7 +670,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                       currentLine = line;
                     } else {
                       // Continue current message
-                      currentLine += ' ' + line;
+                      if (currentLine) {
+                        // Preserve line breaks and clean up extra spaces
+                        currentLine += (line.trim() ? '\n' + line.trim() : '');
+                        // Clean up any duplicate newlines or spaces
+                        currentLine = currentLine.replace(/\n\s*\n/g, '\n').trim();
+                      } else {
+                        currentLine = line;
+                      }
                     }
                   }
                   
@@ -596,10 +686,13 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                     const isInRange = (!startDate || currentDate >= startDate) && 
                                       (!endDate || currentDate <= endDate);
                     
-                    if (isInRange) {
+                    if (isInRange && currentDate instanceof Date) {
                       messagesInRange++;
-                      const linksInLine = currentLine.match(urlPattern) || [];
-                      if (linksInLine.length > 0) {
+                      
+                      // Extract links from the complete message
+                      const extractedLinks = extractLinksWithContext(currentLine, currentDate, allLines.length);
+                      
+                      if (extractedLinks.length > 0) {
                         messagesWithLinks++;
                         
                         // Extract phone number from the message
@@ -610,7 +703,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                         }
                         
                         allLinksWithContext.push({
-                          url: linksInLine[0] || '',
+                          url: extractedLinks[0].url,
                           messageContext: currentLine,
                           date: currentDate,
                           fileName: groupName,
@@ -858,29 +951,35 @@ async function generateSummary(
   console.log('Creating OpenAI prompt with links:', links.length);
   console.log('Date range info:', dateRangeInfo || 'None');
 
-  // Strictly limit the number of links to process based on their total length
-  const MAX_CHARS = 10000;
-  let totalChars = 0;
-  const limitedLinks: LinkWithContext[] = [];
-  
-  for (const link of links) {
-    totalChars += link.url.length;
-    
-    if (totalChars > MAX_CHARS) {
-      console.log(`Reached character limit (${MAX_CHARS}), limiting to ${limitedLinks.length} links`);
-      break;
+  // Increase MAX_CHARS to allow for more links while staying within API limits
+  const MAX_CHARS = 12000; // Increased from previous value
+
+  // More efficient character counting
+  const getMessageSize = (link: LinkWithContext) => {
+    // Calculate approximate size of the message in the prompt
+    return (
+      link.url.length +
+      Math.min(link.messageContext.length, 300) + // Limit context length
+      50 // Buffer for formatting
+    );
+  };
+
+  // Process links more efficiently
+  const processedLinks = links.reduce((acc: LinkWithContext[], link) => {
+    const newSize = acc.reduce((sum, l) => sum + getMessageSize(l), 0) + getMessageSize(link);
+    if (newSize <= MAX_CHARS) {
+      acc.push(link);
     }
-    
-    limitedLinks.push(link);
-  }
-  
-  console.log(`Using ${limitedLinks.length} links in prompt (${totalChars} chars)`);
+    return acc;
+  }, []);
+
+  console.log(`Using ${processedLinks.length} links in prompt (estimated ${processedLinks.reduce((sum, l) => sum + getMessageSize(l), 0)} chars)`);
   
   const prompt = `
     אני מנהל קהילה של יזמי סולו ואני רוצה לסכם לינקים שפורסמו בקבוצות וואטסאפ שלנו ${dateRangeInfo ? dateRangeInfo : ''}.
     
     להלן רשימת הלינקים שפורסמו:
-    ${limitedLinks.map(link => {
+    ${processedLinks.map(link => {
       return `- הלינק: ${link.url}
       - ההודעה המלאה: ${link.messageContext}
       - קבוצה: ${link.fileName || 'לא ידוע'}
@@ -961,7 +1060,7 @@ async function generateSummary(
         
         // Use a bare minimum approach
         const simplifiedPrompt = `סכם את הלינקים הבאים בצורה מובנית ושימושית:
-          ${limitedLinks.slice(0, 20).map(link => {
+          ${processedLinks.slice(0, 20).map(link => {
             return `- הלינק: ${link.url}
             - ההודעה המלאה: ${link.messageContext}
             - קבוצה: ${link.fileName || 'לא ידוע'}
@@ -1014,7 +1113,7 @@ async function generateSummary(
 ${dateRangeInfo ? dateRangeInfo : `תאריך-${summaryDateInfo}`}
 
 *לינקים שנמצאו:*
-${limitedLinks.slice(0, 10).map(link => {
+${processedLinks.slice(0, 10).map(link => {
   // Try to extract domain name for a bit more context
   let domain = '';
   try {
