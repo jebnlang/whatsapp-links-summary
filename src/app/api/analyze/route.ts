@@ -102,6 +102,14 @@ const urlPattern = /(https?:\/\/[^\s]+)/g;
 // 10.9.2024, 12:17 - ...
 const datePattern = /(?:\[)?(\d{1,4}[\.\/\-]\d{1,2}[\.\/\-]\d{1,4}),\s*(\d{1,2}:\d{1,2}(?::\d{1,2})?\s*(?:AM|PM)?)(?:\])?(?:\s*-)?/i;
 
+// New regex pattern to extract the phone number or sender name from WhatsApp messages
+// Matches patterns like:
+// +1 (123) 456-7890: message
+// +123456789: message
+// John Doe: message
+// After the date and time dash separator
+const phonePattern = /(?:\]\s*-\s*|\d{1,2}:\d{1,2}(?::\d{1,2})?\s*(?:AM|PM)?\s*-\s*)([^:]+):/i;
+
 // Extracts date from a WhatsApp message line with improved parsing
 function extractDateFromMessage(messageLine: string): Date | null {
   const match = messageLine.match(datePattern);
@@ -257,6 +265,8 @@ interface LinkWithContext {
   url: string;
   messageContext: string;
   date: Date;
+  fileName?: string; // New field to store the chat group name (file name)
+  phoneNumber?: string; // New field to store the sender's phone number or name
 }
 
 // Define OpenAI error type
@@ -327,6 +337,21 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
     try {
       for (const file of files) {
         console.log(`Processing file: ${file.name}, size: ${file.size} bytes`);
+        
+        // Extract group name from the ZIP file name
+        let groupName = file.name;
+        
+        // Remove .zip extension if present
+        if (groupName.toLowerCase().endsWith('.zip')) {
+          groupName = groupName.slice(0, -4);
+        }
+        
+        // Remove "WhatsApp Chat - " prefix if present
+        if (groupName.startsWith('WhatsApp Chat - ')) {
+          groupName = groupName.substring('WhatsApp Chat - '.length);
+        }
+        
+        console.log(`Extracted group name from file: "${groupName}"`);
         
         // Extract data from zip file
         let zipBuffer;
@@ -412,10 +437,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                     const linksInLine = currentLine.match(urlPattern) || [];
                     if (linksInLine.length > 0) {
                       messagesWithLinks++;
+                      
+                      // Extract phone number from the message
+                      let phoneNumber = undefined;
+                      const phoneMatch = currentLine.match(phonePattern);
+                      if (phoneMatch && phoneMatch[1]) {
+                        phoneNumber = phoneMatch[1].trim();
+                      }
+                      
                       allLinksWithContext.push({
                         url: linksInLine[0] || '',
                         messageContext: currentLine,
-                        date: currentDate
+                        date: currentDate,
+                        fileName: groupName,
+                        phoneNumber: phoneNumber
                       });
                     }
                   }
@@ -440,10 +475,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                 const linksInLine = currentLine.match(urlPattern) || [];
                 if (linksInLine.length > 0) {
                   messagesWithLinks++;
+                  
+                  // Extract phone number from the message
+                  let phoneNumber = undefined;
+                  const phoneMatch = currentLine.match(phonePattern);
+                  if (phoneMatch && phoneMatch[1]) {
+                    phoneNumber = phoneMatch[1].trim();
+                  }
+                  
                   allLinksWithContext.push({
                     url: linksInLine[0] || '',
                     messageContext: currentLine,
-                    date: currentDate
+                    date: currentDate,
+                    fileName: groupName,
+                    phoneNumber: phoneNumber
                   });
                 }
               }
@@ -518,10 +563,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                           const linksInLine = currentLine.match(urlPattern) || [];
                           if (linksInLine.length > 0) {
                             messagesWithLinks++;
+                            
+                            // Extract phone number from the message
+                            let phoneNumber = undefined;
+                            const phoneMatch = currentLine.match(phonePattern);
+                            if (phoneMatch && phoneMatch[1]) {
+                              phoneNumber = phoneMatch[1].trim();
+                            }
+                            
                             allLinksWithContext.push({
                               url: linksInLine[0] || '',
                               messageContext: currentLine,
-                              date: currentDate
+                              date: currentDate,
+                              fileName: groupName,
+                              phoneNumber: phoneNumber
                             });
                           }
                         }
@@ -546,10 +601,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                       const linksInLine = currentLine.match(urlPattern) || [];
                       if (linksInLine.length > 0) {
                         messagesWithLinks++;
+                        
+                        // Extract phone number from the message
+                        let phoneNumber = undefined;
+                        const phoneMatch = currentLine.match(phonePattern);
+                        if (phoneMatch && phoneMatch[1]) {
+                          phoneNumber = phoneMatch[1].trim();
+                        }
+                        
                         allLinksWithContext.push({
                           url: linksInLine[0] || '',
                           messageContext: currentLine,
-                          date: currentDate
+                          date: currentDate,
+                          fileName: groupName,
+                          phoneNumber: phoneNumber
                         });
                       }
                     }
@@ -817,7 +882,8 @@ async function generateSummary(
     להלן רשימת הלינקים שפורסמו:
     ${limitedLinks.map(link => {
       return `- הלינק: ${link.url}
-      - ההודעה המלאה: ${link.messageContext.replace(link.url, '')}
+      - ההודעה המלאה: ${link.messageContext}
+      - קבוצה: ${link.fileName || 'לא ידוע'}
       - תאריך: ${link.date.toLocaleDateString('he-IL')}
       - שעה: ${link.date.toLocaleTimeString('he-IL')}`;
     }).join('\n\n')}
@@ -828,22 +894,22 @@ async function generateSummary(
     3. מיד אחרי הכותרת, הוסף שורה עם ${dateRangeInfo ? `"${dateRangeInfo}"` : `תאריך הסיכום: "תאריך-${summaryDateInfo}"`}
     4. חלק את הלינקים לקטגוריות הגיוניות לפי תוכנם (כמו כלים ליזמים, פלטפורמות בנייה, מאמרים, פוסטים וכו')
     5. עבור כל לינק, תן את המידע הבא במבנה קבוע:
-       - *שם הכלי/האתר* (בהדגשה) - [סוג הלינק: SaaS, כלי, סרטון, פוסט לינקדאין, מאמר, GitHub וכו']
+       - לינק: [URL]
        - תיאור: משפט קצר ומדויק המסביר את המטרה העיקרית או הפונקציה של הלינק
-       - הקשר ההודעה: תקציר קצר של ההודעה שבה הלינק פורסם (אם רלוונטי)
+       - קבוצה: שם הקבוצה שבה פורסם הלינק
+       - ההקשר המלא של ההודעה: הצג את ההודעה המלאה שבה הלינק פורסם (השמט סעיף זה אם ההודעה מכילה רק את הלינק ללא תוכן נוסף)
        - נקודות מפתח:
          • 2-3 נקודות עיקריות המציגות את התכונות, היכולות או התובנות החשובות
        - ערך למשתמש: הסבר ברור מתי, איך או למה הלינק הזה יהיה שימושי לקהל היעד (יזמים, מפתחים, מנהלי מוצר וכו')
        - זמן/מורכבות (אופציונלי): ציין זמן משוער לצפייה/קריאה (לסרטונים/מאמרים) או רמת מורכבות (לכלים/SaaS)
-       - לינק: [URL]
     6. סדר את הלינקים בכל קטגוריה לפי רלוונטיות
     
     הנחיות לפורמט: 
     - הסיכום צריך להיות בעברית, מימין לשמאל
-    - השתמש באסטריקס אחד (*) בהתחלה ובסוף בשביל טקסט מודגש, למשל: *שם הכלי* ולא **שם הכלי**
     - השתמש בנקודות (•) לפריטים בתוך כל לינק
     - הקפד על מבנה אחיד וברור לכל הלינקים
     - הסיכום צריך להיות קל להעתקה והדבקה לקבוצת וואטסאפ
+    - אם ההודעה מכילה רק את הלינק, ללא תוכן נוסף משמעותי, אל תכלול את סעיף "ההקשר המלא של ההודעה" בכלל
     
     חשוב: עבור כל לינק, נסה להבין את התוכן שלו ולספק מידע אמיתי ושימושי. אל תמציא מידע אם אינך בטוח. הסיכום צריך להיות תמציתי, ברור ומועיל.
   `;
@@ -897,7 +963,8 @@ async function generateSummary(
         const simplifiedPrompt = `סכם את הלינקים הבאים בצורה מובנית ושימושית:
           ${limitedLinks.slice(0, 20).map(link => {
             return `- הלינק: ${link.url}
-            - ההודעה המלאה: ${link.messageContext.replace(link.url, '')}
+            - ההודעה המלאה: ${link.messageContext}
+            - קבוצה: ${link.fileName || 'לא ידוע'}
             - תאריך: ${link.date.toLocaleDateString('he-IL')}`;
           }).join('\n\n')}
           
@@ -908,15 +975,16 @@ async function generateSummary(
           חלק את הלינקים לקטגוריות הגיוניות.
           
           עבור כל לינק, הצג במבנה הבא:
-          - *שם הכלי/האתר* - [סוג הלינק]
+          - לינק: [URL]
           - תיאור: משפט קצר על מטרת הלינק
-          - הקשר ההודעה: תקציר של ההודעה בה פורסם הלינק (אם יש)
+          - קבוצה: שם הקבוצה שבה פורסם הלינק
+          - ההקשר המלא של ההודעה: ההודעה המלאה שבה פורסם הלינק (השמט סעיף זה אם ההודעה מכילה רק את הלינק ללא תוכן נוסף)
           - נקודות מפתח:
             • תכונה/תובנה עיקרית אחת
           - ערך למשתמש: למי ומתי הלינק שימושי
-          - לינק: [URL]
           
           הקפד על מבנה אחיד, תמציתי וברור בעברית.
+          אם ההודעה מכילה רק את הלינק, ללא תוכן נוסף משמעותי, אל תכלול את סעיף "ההקשר המלא של ההודעה" בכלל.
         `;
         
         console.log(`Simplified prompt length: ${simplifiedPrompt.length} characters`);
@@ -955,11 +1023,11 @@ ${limitedLinks.slice(0, 10).map(link => {
   } catch (e) {
     domain = 'אתר';
   }
-  return `- *${domain}*
+  return `- לינק: ${link.url}
   - תיאור: לינק מקבוצת הוואטסאפ
+  - קבוצה: ${link.fileName || 'לא ידוע'}
   - הקשר: ${link.messageContext.replace(link.url, '').substring(0, 100)}${link.messageContext.replace(link.url, '').length > 100 ? '...' : ''}
-  - תאריך: ${link.date.toLocaleDateString('he-IL')}
-  - לינק: ${link.url}`;
+  - תאריך: ${link.date.toLocaleDateString('he-IL')}`;
 }).join('\n\n')}
 
 (הסיכום המפורט נכשל עקב עומס - הצגת לינקים בלבד)`;
