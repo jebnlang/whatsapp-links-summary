@@ -101,7 +101,7 @@ const datePattern = /(?:\[)?(\d{1,2})[\.\/\-](\d{1,2})[\.\/\-](\d{2,4}),\s*(\d{1
 // +123456789: message
 // John Doe: message
 // After the date and time dash separator
-const phonePattern = /(?:\]\s*-\s*|\d{1,2}:\d{1,2}(?::\d{1,2})?\s*(?:AM|PM)?\s*-\s*)([^:]+):/i;
+const phonePattern = /(?:\]\s*-?\s*~?\s*)([^:]+):/i;
 
 // Extracts date from a WhatsApp message line with improved parsing
 function extractDateFromMessage(messageLine: string): Date | null {
@@ -235,8 +235,9 @@ interface LinkWithContext {
   url: string;
   messageContext: string;
   date: Date;
-  fileName?: string; // New field to store the chat group name (file name)
-  phoneNumber?: string; // New field to store the sender's phone number or name
+  fileName?: string;
+  phoneNumber?: string;
+  sender?: string;
 }
 
 // Define OpenAI error type
@@ -310,6 +311,20 @@ function extractLinksWithContext(message: string, messageDate: Date, lineNumber:
   return extractedLinks;
 }
 
+// Extract sender name from a message line
+function extractSender(messageLine: string): string | undefined {
+  const match = messageLine.match(phonePattern);
+  if (match && match[1]) {
+    return match[1].trim();
+  }
+  return undefined;
+}
+
+// Helper function to create responses
+const createResponse = (data: ResponseData, status = 200) => {
+  return NextResponse.json(data, { status });
+};
+
 export async function POST(request: NextRequest): Promise<NextResponse<ResponseData>> {
   const startTime = Date.now();
   console.log(`Starting file processing at ${new Date().toISOString()}`);
@@ -341,18 +356,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       console.log(`Parsed end date: ${endDate.toISOString()}`);
     }
     
-    // Helper function to create progress responses
-    const responseWithProgress = (step: string, data: ResponseData, status = 200) => {
-      return NextResponse.json(data, { 
-        status,
-        headers: {
-          'X-Process-Step': step
-        }
-      });
-    };
-    
     if (files.length === 0) {
-      return responseWithProgress('idle', { message: 'לא התקבלו קבצים' }, 400);
+      return createResponse({ message: 'לא התקבלו קבצים' }, 400);
     }
     
     const fileProcessingStartTime = Date.now();
@@ -496,15 +501,19 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                         phoneNumber = phoneMatch[1].trim();
                       }
                       
-                      // Double check date range before adding links
+                      // Extract sender name from the message
+                      const sender = extractSender(currentLine);
+                      
+                      // Update where links are added to include sender information
                       if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
-                        const validDate: Date = currentDate; // Type assertion to ensure Date type
+                        const validDate: Date = currentDate;
                         allLinksWithContext.push(...extractedLinks.map(link => ({
                           url: link.url,
                           messageContext: currentLine,
                           date: validDate,
                           fileName: groupName,
-                          phoneNumber: phoneNumber
+                          phoneNumber: phoneNumber,
+                          sender: sender
                         })));
                       } else {
                         console.log(`Skipping message - failed secondary date range check:`, {
@@ -554,13 +563,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                         phoneNumber = phoneMatch[1].trim();
                       }
                       
+                      // Extract sender name from the message
+                      const sender = extractSender(line);
+                      
                       const validDate: Date = currentDate;
                       allLinksWithContext.push(...dateLineLinks.map(link => ({
                         url: link.url,
                         messageContext: line,
                         date: validDate,
                         fileName: groupName,
-                        phoneNumber: phoneNumber
+                        phoneNumber: phoneNumber,
+                        sender: sender
                       })));
                     }
                   } else {
@@ -625,15 +638,19 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                     phoneNumber = phoneMatch[1].trim();
                   }
                   
-                  // Double check date range before adding links
+                  // Extract sender name from the message
+                  const sender = extractSender(currentLine);
+                  
+                  // Update where links are added to include sender information
                   if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
-                    const validDate: Date = currentDate; // Type assertion to ensure Date type
+                    const validDate: Date = currentDate;
                     allLinksWithContext.push(...extractedLinks.map(link => ({
                       url: link.url,
                       messageContext: currentLine,
                       date: validDate,
                       fileName: groupName,
-                      phoneNumber: phoneNumber
+                      phoneNumber: phoneNumber,
+                      sender: sender
                     })));
                   } else {
                     console.log(`Skipping message - failed secondary date range check:`, {
@@ -736,6 +753,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                               phoneNumber = phoneMatch[1].trim();
                             }
                             
+                            // Extract sender name from the message
+                            const sender = extractSender(currentLine);
+                            
                             // Double check date range before adding links
                             if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
                               const validDate: Date = currentDate; // Type assertion to ensure Date type
@@ -744,7 +764,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                                 messageContext: currentLine,
                                 date: validDate,
                                 fileName: groupName,
-                                phoneNumber: phoneNumber
+                                phoneNumber: phoneNumber,
+                                sender: sender
                               })));
                             } else {
                               console.log('Skipping message - invalid date:', currentDate);
@@ -790,6 +811,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                           phoneNumber = phoneMatch[1].trim();
                         }
                         
+                        // Extract sender name from the message
+                        const sender = extractSender(currentLine);
+                        
                         // Ensure we have a valid date before adding links
                         if (currentDate instanceof Date) {
                           const validDate: Date = currentDate; // Type assertion to ensure Date type
@@ -798,7 +822,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                             messageContext: currentLine,
                             date: validDate,
                             fileName: groupName,
-                            phoneNumber: phoneNumber
+                            phoneNumber: phoneNumber,
+                            sender: sender
                           })));
                         } else {
                           console.log('Skipping message - invalid date:', currentDate);
@@ -863,7 +888,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       }
     } catch (error) {
       console.error('Error processing files:', error);
-      return responseWithProgress('idle', { 
+      return createResponse({ 
         message: 'שגיאה בעיבוד הקבצים',
         error: error instanceof Error ? error.message : 'Unknown error',
         details: error 
@@ -890,21 +915,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       console.log(`- Date range: ${startDate?.toISOString()} to ${endDate?.toISOString()}`);
       console.log(`- Error message to user: ${errorMessage}`);
       
-      return responseWithProgress(
-        'idle',
-        { 
-          message: errorMessage,
-          details: {
-            filesProcessed: files.length,
-            chatFilesFound: totalChatFilesFound,
-            dateRange: {
-              start: startDate?.toISOString(),
-              end: endDate?.toISOString()
-            }
+      return createResponse({ 
+        message: errorMessage,
+        details: {
+          filesProcessed: files.length,
+          chatFilesFound: totalChatFilesFound,
+          dateRange: {
+            start: startDate?.toISOString(),
+            end: endDate?.toISOString()
           }
-        },
-        404
-      );
+        }
+      }, 404);
     }
 
     // Strictly limit links to ensure processing completes within timeout
@@ -928,7 +949,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       const connectionTest = await testOpenAIConnection();
       if (!connectionTest.success) {
         console.error('OpenAI connection test failed:', connectionTest.error);
-        return responseWithProgress('idle', { 
+        return createResponse({ 
           message: 'שגיאה בחיבור ל-OpenAI',
           error: connectionTest.error,
           details: {
@@ -949,7 +970,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       // Log total execution time
       logTime('Total execution time', startTime);
       
-      return responseWithProgress('complete', { summary });
+      return createResponse({ summary });
     } catch (error) {
       const aiTime = logTime('AI processing (error)', aiStartTime);
       console.error('Error generating summary with OpenAI:', error);
@@ -976,13 +997,13 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
         errorDetails.message = 'זמן העיבוד ארוך מדי. אנא נסה עם פחות קבצים או טווח תאריכים קטן יותר.';
       }
       
-      return responseWithProgress('idle', errorDetails, 500);
+      return createResponse(errorDetails, 500);
     }
   } catch (error) {
     console.error('Error in POST handler:', error);
     const totalTime = logTime('Total execution time (error)', startTime);
     
-    return NextResponse.json(
+    return createResponse(
       { 
         message: 'אירעה שגיאה בעיבוד הקבצים',
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -991,12 +1012,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
           totalTimeMs: totalTime
         }
       },
-      { 
-        status: 500,
-        headers: {
-          'X-Process-Step': 'idle'
-        }
-      }
+      500
     );
   }
 }
@@ -1079,35 +1095,48 @@ async function generateSummary(
       return `- הלינק: ${link.url}
       - ההודעה המלאה: ${cleanedContext}
       - קבוצה: ${link.fileName || 'לא ידוע'}
+      - שולח: ${link.sender || 'לא ידוע'}
       - תאריך: ${link.date.toLocaleDateString('he-IL')}
       - שעה: ${link.date.toLocaleTimeString('he-IL')}`;
     }).join('\n\n')}
     
-    אנא צור סיכום מפורט ושימושי של הלינקים הללו, עם החלוקה הבאה:
-    1. התחל את הסיכום עם "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות"
-    2. בשורה השנייה, הוסף: "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה*"
-    3. מיד אחרי הכותרת, הוסף שורה עם ${dateRangeInfo ? `"${dateRangeInfo}"` : `תאריך הסיכום: "תאריך-${summaryDateInfo}"`}
-    4. חלק את הלינקים לקטגוריות הגיוניות לפי תוכנם (כמו כלים ליזמים, פלטפורמות בנייה, מאמרים, פוסטים וכו')
-    5. עבור כל לינק, תן את המידע הבא במבנה קבוע:
-       - לינק: [URL]
-       - תיאור: משפט קצר ומדויק המסביר את המטרה העיקרית או הפונקציה של הלינק
-       - קבוצה: [שם הקבוצה המדויק כפי שמופיע בשדה fileName]
-       - ההקשר המלא של ההודעה: הצג את ההודעה המלאה רק אם היא מכילה תוכן נוסף מעבר ללינק עצמו
-       - נקודות מפתח:
-         • 2-3 נקודות עיקריות המציגות את התכונות, היכולות או התובנות החשובות
-       - ערך למשתמש: הסבר ברור מתי, איך או למה הלינק הזה יהיה שימושי לקהל היעד (יזמים, מפתחים, מנהלי מוצר וכו')
-    6. סדר את הלינקים בכל קטגוריה לפי רלוונטיות
+    סכם את הלינקים הללו באופן מובנה ועקבי עם המבנה המדויק הבא:
+
+    "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות
     
-    הנחיות לפורמט: 
-    - הסיכום צריך להיות בעברית, מימין לשמאל
-    - השתמש בנקודות (•) לפריטים בתוך כל לינק
-    - הקפד על מבנה אחיד וברור לכל הלינקים
-    - הסיכום צריך להיות קל להעתקה והדבקה לקבוצת וואטסאפ
-    - השתמש בכוכבית בודדת (*) בתחילת ובסוף טקסט להדגשה, לא בכוכבית כפולה
-    - הצג את סעיף "ההקשר המלא של ההודעה" רק אם ההודעה מכילה תוכן נוסף מעבר ללינק עצמו
-    - הקפד להציג את שם הקבוצה המדויק בסעיף "קבוצה"
-    
-    חשוב: עבור כל לינק, נסה להבין את התוכן שלו ולספק מידע אמיתי ושימושי. אל תמציא מידע אם אינך בטוח. הסיכום צריך להיות תמציתי, ברור ומועיל.
+    *סיכום לינקים שפורסמו בקבוצות השונות בקהילה*
+    ${dateRangeInfo ? dateRangeInfo : `תאריך-${summaryDateInfo}`}
+
+    סדר את הלינקים לפי הקטגוריות הבאות בדיוק, והצג רק קטגוריות שיש בהן לינקים:
+    1. *כלי AI ופלטפורמות*
+    2. *רשתות חברתיות ונטוורקינג*
+    3. *שיתוף פעולה ותקשורת*
+    4. *משאבי פיתוח והדרכות*
+    5. *עסקים ושיווק*
+    6. *אחר*
+
+    עבור כל לינק, השתמש במבנה הבא בדיוק, בסדר הזה:
+
+    לינק: [URL]
+    תיאור: [תיאור קצר של הלינק בעברית]
+    ההקשר המלא של ההודעה: [הצג רק אם יש הקשר חשוב מעבר ללינק עצמו]
+    קבוצה: [שם הקבוצה]
+    שולח: [שם השולח]
+    נקודות מפתח: [הצג רק אם רלוונטי, עד 3 נקודות]
+    • [נקודה 1]
+    • [נקודה 2]
+    • [נקודה 3]
+
+    כללים חשובים:
+    1. הצג תמיד את שם הקטגוריה עם כוכבית לפני ואחרי (*כלי AI ופלטפורמות*)
+    2. השאר רווח של שורה אחת בין כל לינק
+    3. הצג את ההקשר המלא של ההודעה רק אם יש בו מידע מהותי מעבר ללינק עצמו
+    4. הצג נקודות מפתח רק כאשר יש מידע רלוונטי ומשמעותי
+    5. אל תוסיף תכנים שאינם מופיעים בפורמט שהוגדר
+    6. אל תוסיף כל טקסט או סיכום בסוף המסמך
+    7. המסמך צריך להסתיים עם הלינק האחרון, ללא כל תוכן נוסף
+
+    הקפד לשמור על מבנה אחיד וקבוע לחלוטין עבור כל הלינקים, בכל פעם שהסיכום נוצר."
   `;
 
   console.log('Making API call to OpenAI');
@@ -1121,10 +1150,10 @@ async function generateSummary(
     const response = await openai.chat.completions.create({
       model: 'gpt-3.5-turbo', // Use faster model for production
       messages: [
-        { role: 'system', content: 'אתה עוזר מועיל המתמחה בארגון וסיכום מידע עבור קבוצות וואטסאפ. כתוב בעברית, מימין לשמאל.' },
+        { role: 'system', content: 'אתה עוזר שמייצר סיכומים מובנים ואחידים לפי פורמט קבוע ומדויק. התוצר שלך זהה בכל פעם מבחינת המבנה.' },
         { role: 'user', content: prompt }
       ],
-      temperature: 0.7,
+      temperature: 0.3, // Lower temperature for more consistent results
       max_tokens: 2000, // Reduce tokens for faster response
     });
     
@@ -1156,47 +1185,52 @@ async function generateSummary(
         const fallbackStartTime = Date.now();
         
         // Use a bare minimum approach
-        const simplifiedPrompt = `סכם את הלינקים הבאים בצורה מובנית ושימושית:
-          ${processedLinks.slice(0, 20).map(link => {
+        const simplifiedPrompt = `סכם את הלינקים הבאים בפורמט הבא בדיוק:
+
+        לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות
+        
+        *סיכום לינקים שפורסמו בקבוצות השונות בקהילה*
+        ${dateRangeInfo ? dateRangeInfo : `תאריך-${summaryDateInfo}`}
+        
+        קטגוריות (הצג רק קטגוריות שיש בהן לינקים):
+        *כלי AI ופלטפורמות*
+        *רשתות חברתיות ונטוורקינג*
+        *שיתוף פעולה ותקשורת*
+        *משאבי פיתוח והדרכות*
+        *עסקים ושיווק*
+        *אחר*
+        
+        מבנה לכל לינק:
+        לינק: [URL]
+        תיאור: [תיאור קצר]
+        ההקשר המלא של ההודעה: [רק אם יש מידע חשוב]
+        קבוצה: [שם הקבוצה]
+        שולח: [שם השולח]
+        נקודות מפתח: [רק אם רלוונטי]
+        • [נקודה 1]
+        • [נקודה 2]
+        • [נקודה 3]
+        
+        הלינקים:
+        ${processedLinks.slice(0, 20).map(link => {
             // Clean message context by removing date/time and sender info
             const cleanedContext = link.messageContext.replace(/^\[.*?\]\s*~?\s*[^:]+:\s*/m, '');
             return `- הלינק: ${link.url}
             - ההודעה המלאה: ${cleanedContext}
             - קבוצה: ${link.fileName || 'לא ידוע'}
+            - שולח: ${link.sender || 'לא ידוע'}
             - תאריך: ${link.date.toLocaleDateString('he-IL')}`;
-          }).join('\n\n')}
-          
-          התחל את הסיכום עם: "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות"
-          בשורה השנייה, הוסף: "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה*"
-          בשורה השלישית, הוסף: ${dateRangeInfo ? `"${dateRangeInfo}"` : `"תאריך-${summaryDateInfo}"`}
-          
-          חלק את הלינקים לקטגוריות הגיוניות.
-          
-          עבור כל לינק, הצג במבנה הבא:
-          - לינק: [URL]
-          - תיאור: משפט קצר על מטרת הלינק
-          - קבוצה: [שם הקבוצה המדויק]
-          - ההקשר המלא של ההודעה: הצג רק אם ההודעה מכילה תוכן נוסף מעבר ללינק
-          - נקודות מפתח:
-            • תכונה/תובנה עיקרית אחת
-          - ערך למשתמש: למי ומתי הלינק שימושי
-          
-          הקפד על:
-          - מבנה אחיד ותמציתי בעברית
-          - שימוש בכוכבית בודדת (*) להדגשה
-          - הצגת שם הקבוצה המדויק
-          - הצגת הקשר ההודעה רק אם יש תוכן נוסף מעבר ללינק
-        `;
+        }).join('\n\n')}`;
         
         console.log(`Simplified prompt length: ${simplifiedPrompt.length} characters`);
         
         const fallbackResponse = await openai.chat.completions.create({
           model: 'gpt-3.5-turbo',
           messages: [
-            { role: 'system', content: 'תן תשובה קצרה בעברית.' },
+            { role: 'system', content: 'אתה עוזר שמייצר סיכומים מובנים ואחידים לפי פורמט קבוע ומדויק.' },
             { role: 'user', content: simplifiedPrompt }
           ],
-          temperature: 0.5,
+          temperature: 0.2, // Even lower temperature for consistency
           max_tokens: 1000,
         });
         
@@ -1211,27 +1245,16 @@ async function generateSummary(
         console.log('Returning basic formatted links as fallback');
         return `לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות
 
-*סיכום לינקים שפורסמו בקבוצות השונות בקהילה:*
+*סיכום לינקים שפורסמו בקבוצות השונות בקהילה*
 ${dateRangeInfo ? dateRangeInfo : `תאריך-${summaryDateInfo}`}
 
-*לינקים שנמצאו:*
+*אחר*
 ${processedLinks.slice(0, 10).map(link => {
-  // Try to extract domain name for a bit more context
-  let domain = '';
-  try {
-    const url = new URL(link.url);
-    domain = url.hostname.replace('www.', '');
-  } catch (e) {
-    domain = 'אתר';
-  }
-  return `- לינק: ${link.url}
-  - תיאור: לינק מקבוצת הוואטסאפ
-  - קבוצה: ${link.fileName || 'לא ידוע'}
-  - הקשר: ${link.messageContext.replace(link.url, '').substring(0, 100)}${link.messageContext.replace(link.url, '').length > 100 ? '...' : ''}
-  - תאריך: ${link.date.toLocaleDateString('he-IL')}`;
-}).join('\n\n')}
-
-(הסיכום המפורט נכשל עקב עומס - הצגת לינקים בלבד)`;
+  return `לינק: ${link.url}
+תיאור: לינק מקבוצת הוואטסאפ
+קבוצה: ${link.fileName || 'לא ידוע'}
+שולח: ${link.sender || 'לא ידוע'}`;
+}).join('\n\n')}`;
       }
     }
     
