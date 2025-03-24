@@ -44,7 +44,7 @@ async function testOpenAIConnection(): Promise<{success: boolean, error?: string
     const startTime = Date.now();
     
     const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
+      model: 'gpt-4o-mini-2024-07-18',
       messages: [
         { role: 'system', content: 'You are a helpful assistant.' },
         { role: 'user', content: 'Say hello in Hebrew' }
@@ -95,13 +95,12 @@ const urlPattern = /((?:https?:\/\/)?(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-
 // Now more strict about the format to ensure consistent parsing
 const datePattern = /(?:\[)?(\d{1,2})[\.\/\-](\d{1,2})[\.\/\-](\d{2,4}),\s*(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?\s*(?:AM|PM)?(?:\])?(?:\s*-)?/i;
 
-// New regex pattern to extract the phone number or sender name from WhatsApp messages
+// New regex pattern to extract the sender name from WhatsApp messages with improved handling of format variations
 // Matches patterns like:
-// +1 (123) 456-7890: message
-// +123456789: message
-// John Doe: message
-// After the date and time dash separator
-const phonePattern = /(?:\]\s*-?\s*~?\s*)([^:]+):/i;
+// ~ David Horesh: message
+// Idan Openweb: message
+// ~ Adir: message
+const senderPattern = /(?:\]\s*)(?:-?\s*)?(?:~?\s*)?([^:]+):/i;
 
 // Extracts date from a WhatsApp message line with improved parsing
 function extractDateFromMessage(messageLine: string): Date | null {
@@ -236,7 +235,6 @@ interface LinkWithContext {
   messageContext: string;
   date: Date;
   fileName?: string;
-  phoneNumber?: string;
   sender?: string;
 }
 
@@ -313,9 +311,20 @@ function extractLinksWithContext(message: string, messageDate: Date, lineNumber:
 
 // Extract sender name from a message line
 function extractSender(messageLine: string): string | undefined {
-  const match = messageLine.match(phonePattern);
+  const match = messageLine.match(senderPattern);
   if (match && match[1]) {
-    return match[1].trim();
+    // Clean up the sender name (remove any trailing ~ if present)
+    let sender = match[1].trim();
+    
+    // Remove "requested to join" or other system message indicators if present
+    if (sender.includes('requested to join')) {
+      sender = sender.split('requested to join')[0].trim();
+    }
+    
+    // In case there are multiple tildes, clean them up
+    sender = sender.replace(/^~+\s*/, '').trim();
+    
+    return sender;
   }
   return undefined;
 }
@@ -494,15 +503,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                         links: extractedLinks.map(l => l.url)
                       });
                       
-                      // Extract phone number from the message
-                      let phoneNumber = undefined;
-                      const phoneMatch = currentLine.match(phonePattern);
-                      if (phoneMatch && phoneMatch[1]) {
-                        phoneNumber = phoneMatch[1].trim();
-                      }
-                      
                       // Extract sender name from the message
-                      const sender = extractSender(currentLine);
+                      let sender = extractSender(currentLine);
                       
                       // Update where links are added to include sender information
                       if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
@@ -512,7 +514,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                           messageContext: currentLine,
                           date: validDate,
                           fileName: groupName,
-                          phoneNumber: phoneNumber,
                           sender: sender
                         })));
                       } else {
@@ -556,15 +557,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                         links: dateLineLinks.map(l => l.url)
                       });
                       
-                      // Extract phone number from the message
-                      let phoneNumber = undefined;
-                      const phoneMatch = line.match(phonePattern);
-                      if (phoneMatch && phoneMatch[1]) {
-                        phoneNumber = phoneMatch[1].trim();
-                      }
-                      
                       // Extract sender name from the message
-                      const sender = extractSender(line);
+                      let sender = extractSender(line);
                       
                       const validDate: Date = currentDate;
                       allLinksWithContext.push(...dateLineLinks.map(link => ({
@@ -572,7 +566,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                         messageContext: line,
                         date: validDate,
                         fileName: groupName,
-                        phoneNumber: phoneNumber,
                         sender: sender
                       })));
                     }
@@ -631,15 +624,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                     links: extractedLinks.map(l => l.url)
                   });
                   
-                  // Extract phone number from the message
-                  let phoneNumber = undefined;
-                  const phoneMatch = currentLine.match(phonePattern);
-                  if (phoneMatch && phoneMatch[1]) {
-                    phoneNumber = phoneMatch[1].trim();
-                  }
-                  
                   // Extract sender name from the message
-                  const sender = extractSender(currentLine);
+                  let sender = extractSender(currentLine);
                   
                   // Update where links are added to include sender information
                   if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
@@ -649,7 +635,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                       messageContext: currentLine,
                       date: validDate,
                       fileName: groupName,
-                      phoneNumber: phoneNumber,
                       sender: sender
                     })));
                   } else {
@@ -746,15 +731,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                           if (extractedLinks.length > 0) {
                             messagesWithLinks++;
                             
-                            // Extract phone number from the message
-                            let phoneNumber = undefined;
-                            const phoneMatch = currentLine.match(phonePattern);
-                            if (phoneMatch && phoneMatch[1]) {
-                              phoneNumber = phoneMatch[1].trim();
-                            }
-                            
                             // Extract sender name from the message
-                            const sender = extractSender(currentLine);
+                            let sender = extractSender(currentLine);
                             
                             // Double check date range before adding links
                             if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
@@ -764,7 +742,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                                 messageContext: currentLine,
                                 date: validDate,
                                 fileName: groupName,
-                                phoneNumber: phoneNumber,
                                 sender: sender
                               })));
                             } else {
@@ -804,15 +781,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                       if (extractedLinks.length > 0) {
                         messagesWithLinks++;
                         
-                        // Extract phone number from the message
-                        let phoneNumber = undefined;
-                        const phoneMatch = currentLine.match(phonePattern);
-                        if (phoneMatch && phoneMatch[1]) {
-                          phoneNumber = phoneMatch[1].trim();
-                        }
-                        
                         // Extract sender name from the message
-                        const sender = extractSender(currentLine);
+                        let sender = extractSender(currentLine);
                         
                         // Ensure we have a valid date before adding links
                         if (currentDate instanceof Date) {
@@ -822,7 +792,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                             messageContext: currentLine,
                             date: validDate,
                             fileName: groupName,
-                            phoneNumber: phoneNumber,
                             sender: sender
                           })));
                         } else {
@@ -1143,18 +1112,18 @@ async function generateSummary(
   console.log(`Prompt length: ${prompt.length} characters`);
   
   try {
-    console.log('Attempting OpenAI API call with gpt-3.5-turbo');
+    console.log('Attempting OpenAI API call with gpt-4o-mini-2024-07-18');
     const apiCallStartTime = Date.now();
     
-    // First try with GPT-3.5 for speed
+    // First try with GPT-4 for speed
     const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo', // Use faster model for production
+      model: 'gpt-4o-mini-2024-07-18',
       messages: [
         { role: 'system', content: 'אתה עוזר שמייצר סיכומים מובנים ואחידים לפי פורמט קבוע ומדויק. התוצר שלך זהה בכל פעם מבחינת המבנה.' },
         { role: 'user', content: prompt }
       ],
-      temperature: 0.3, // Lower temperature for more consistent results
-      max_tokens: 2000, // Reduce tokens for faster response
+      temperature: 0.3,
+      max_tokens: 2000,
     });
     
     const apiCallTime = Date.now() - apiCallStartTime;
@@ -1225,12 +1194,12 @@ async function generateSummary(
         console.log(`Simplified prompt length: ${simplifiedPrompt.length} characters`);
         
         const fallbackResponse = await openai.chat.completions.create({
-          model: 'gpt-3.5-turbo',
+          model: 'gpt-4o-mini-2024-07-18',
           messages: [
             { role: 'system', content: 'אתה עוזר שמייצר סיכומים מובנים ואחידים לפי פורמט קבוע ומדויק.' },
             { role: 'user', content: simplifiedPrompt }
           ],
-          temperature: 0.2, // Even lower temperature for consistency
+          temperature: 0.2,
           max_tokens: 1000,
         });
         
