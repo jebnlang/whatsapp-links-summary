@@ -92,15 +92,8 @@ function logTime(label: string, startTime: number) {
 const urlPattern = /((?:https?:\/\/)?(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_+.~#?&//=]*))/gi;
 
 // Updated regex pattern to match multiple WhatsApp date formats
-// Supports formats like:
-// [31/12/2023, 23:45:67]
-// [12/31/23, 11:45 PM]
-// [2023-12-31, 23:45:67]
-// [31.12.2023, 23:45]
-// And now also formats without brackets:
-// 22.9.2024, 14:33 - ...
-// 10.9.2024, 12:17 - ...
-const datePattern = /(?:\[)?(\d{1,4}[\.\/\-]\d{1,2}[\.\/\-]\d{1,4}),\s*(\d{1,2}:\d{1,2}(?::\d{1,2})?\s*(?:AM|PM)?)(?:\])?(?:\s*-)?/i;
+// Now more strict about the format to ensure consistent parsing
+const datePattern = /(?:\[)?(\d{1,2})[\.\/\-](\d{1,2})[\.\/\-](\d{2,4}),\s*(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?\s*(?:AM|PM)?(?:\])?(?:\s*-)?/i;
 
 // New regex pattern to extract the phone number or sender name from WhatsApp messages
 // Matches patterns like:
@@ -113,115 +106,92 @@ const phonePattern = /(?:\]\s*-\s*|\d{1,2}:\d{1,2}(?::\d{1,2})?\s*(?:AM|PM)?\s*-
 // Extracts date from a WhatsApp message line with improved parsing
 function extractDateFromMessage(messageLine: string): Date | null {
   const match = messageLine.match(datePattern);
-  if (!match) return null;
-  
-  const dateStr = match[1];
-  const timeStr = match[2];
-  
-  console.log(`Parsing date: ${dateStr}, time: ${timeStr}`);
-  
-  let day: number, month: number, year: number;
-  
-  // Check what date format we have
-  if (dateStr.includes('-')) {
-    // Format: YYYY-MM-DD or DD-MM-YYYY
-    const parts = dateStr.split('-');
-    if (parts[0].length === 4) {
-      // YYYY-MM-DD
-      year = parseInt(parts[0], 10);
-      month = parseInt(parts[1], 10);
-      day = parseInt(parts[2], 10);
-    } else {
-      // DD-MM-YYYY
-      day = parseInt(parts[0], 10);
-      month = parseInt(parts[1], 10);
-      year = parseInt(parts[2], 10);
-    }
-  } else if (dateStr.includes('.')) {
-    // Format: DD.MM.YYYY
-    const parts = dateStr.split('.');
-    day = parseInt(parts[0], 10);
-    month = parseInt(parts[1], 10);
-    year = parseInt(parts[2], 10);
-  } else {
-    // Format: DD/MM/YYYY or MM/DD/YYYY
-    const parts = dateStr.split('/');
-    
-    // Heuristic: if middle number is > 12, it's day in DD/MM/YY
-    // If first number is > 12, it's day in DD/MM/YY
-    // Otherwise assume MM/DD/YY (US format)
-    const firstNumber = parseInt(parts[0], 10);
-    const middleNumber = parseInt(parts[1], 10);
-    
-    if (middleNumber > 12 || firstNumber > 12) {
-      day = firstNumber;
-      month = middleNumber;
-      year = parseInt(parts[2], 10);
-    } else {
-      // US format MM/DD/YY - less common but possible
-      month = firstNumber;
-      day = middleNumber;
-      year = parseInt(parts[2], 10);
-    }
-  }
-  
-  // Convert 2-digit year to 4-digit year
-  if (year < 100) {
-    year = year < 50 ? 2000 + year : 1900 + year;
-  }
-  
-  // Validate the date components
-  if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1900 || year > 2100) {
-    console.log(`Invalid date components: day=${day}, month=${month}, year=${year}`);
+  if (!match) {
+    console.log(`No date pattern match found in line: "${messageLine.substring(0, 50)}..."`);
     return null;
   }
   
-  // Parse time
-  let hour = 0, minute = 0, second = 0;
-  const timeParts = timeStr.trim().split(':');
-  hour = parseInt(timeParts[0], 10);
-  minute = parseInt(timeParts[1], 10);
+  // Extract components from regex match
+  const [_, dayStr, monthStr, yearStr, hourStr, minuteStr, secondStr] = match;
   
-  // Check if there are seconds
-  if (timeParts.length > 2) {
-    // If seconds exist, they might have AM/PM attached
-    const secondPart = timeParts[2];
-    if (secondPart.includes('AM') || secondPart.includes('PM')) {
-      second = parseInt(secondPart.split(' ')[0], 10);
-      
-      // Adjust hour for PM
-      if (secondPart.includes('PM') && hour < 12) {
-        hour += 12;
-      }
-      // Adjust hour for AM
-      if (secondPart.includes('AM') && hour === 12) {
-        hour = 0;
-      }
-    } else {
-      second = parseInt(secondPart, 10);
-    }
-  } else if (timeParts[1].includes('AM') || timeParts[1].includes('PM')) {
-    // Handle formats like "11:45 PM"
-    const minutePart = timeParts[1].split(' ')[0];
-    minute = parseInt(minutePart, 10);
-    
-    // Adjust hour for AM/PM
-    if (timeParts[1].includes('PM') && hour < 12) {
-      hour += 12;
-    }
-    if (timeParts[1].includes('AM') && hour === 12) {
-      hour = 0;
-    }
+  console.log(`Parsing date components:`, {
+    day: dayStr,
+    month: monthStr,
+    year: yearStr,
+    hour: hourStr,
+    minute: minuteStr,
+    second: secondStr
+  });
+
+  // Parse numeric values
+  const day = parseInt(dayStr, 10);
+  const month = parseInt(monthStr, 10);
+  let year = parseInt(yearStr, 10);
+  const hour = parseInt(hourStr, 10);
+  const minute = parseInt(minuteStr, 10);
+  const second = secondStr ? parseInt(secondStr, 10) : 0;
+
+  // Validate basic ranges
+  if (month < 1 || month > 12) {
+    console.log(`Invalid month value: ${month}`);
+    return null;
   }
   
+  // Get days in the specific month
+  const daysInMonth = new Date(year, month, 0).getDate();
+  if (day < 1 || day > daysInMonth) {
+    console.log(`Invalid day value: ${day} for month: ${month}`);
+    return null;
+  }
+
+  // Handle 2-digit years
+  if (year < 100) {
+    year = year <= 49 ? 2000 + year : 1900 + year;
+    console.log(`Converted 2-digit year ${yearStr} to ${year}`);
+  }
+
+  // Validate year is reasonable (not too old or in future)
+  const currentYear = new Date().getFullYear();
+  if (year < currentYear - 5 || year > currentYear + 1) {
+    console.log(`Year ${year} outside reasonable range`);
+    return null;
+  }
+
+  // Validate time components
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+    console.log(`Invalid time values - hour: ${hour}, minute: ${minute}, second: ${second}`);
+    return null;
+  }
+
   try {
     const parsedDate = new Date(year, month - 1, day, hour, minute, second);
-    console.log(`Parsed date: ${parsedDate.toISOString()}`);
+    
+    // Validate the parsed date is valid and not in the future
+    const now = new Date();
+    if (parsedDate > now) {
+      console.log(`Parsed date ${parsedDate.toISOString()} is in the future`);
+      return null;
+    }
+
+    console.log(`Successfully parsed date: ${parsedDate.toISOString()} from line: "${messageLine.substring(0, 50)}..."`);
     return parsedDate;
   } catch (e) {
     console.error('Error creating date object:', e);
     return null;
   }
+}
+
+// Helper function to compare dates ignoring time
+function isSameOrAfterDate(date: Date, compareToDate: Date): boolean {
+  const d1 = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const d2 = new Date(compareToDate.getFullYear(), compareToDate.getMonth(), compareToDate.getDate());
+  return d1 >= d2;
+}
+
+function isSameOrBeforeDate(date: Date, compareToDate: Date): boolean {
+  const d1 = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const d2 = new Date(compareToDate.getFullYear(), compareToDate.getMonth(), compareToDate.getDate());
+  return d1 <= d2;
 }
 
 // Utility function to set a date to the start of the day (00:00:00)
@@ -488,9 +458,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                 // Process previous message if it exists and contains links
                 if (currentLine && currentDate) {
                   // Check if the message is within the date range
-                  const isInRange = (!startDate || currentDate >= startDate) && 
-                                    (!endDate || currentDate <= endDate);
-                  
+                  const isAfterStart = !startDate || isSameOrAfterDate(currentDate, startDate);
+                  const isBeforeEnd = !endDate || isSameOrBeforeDate(currentDate, endDate);
+                  const isInRange = isAfterStart && isBeforeEnd;
+
+                  console.log(`Detailed date range check for message:`, {
+                    messageDate: currentDate.toISOString(),
+                    startDate: startDate?.toISOString(),
+                    endDate: endDate?.toISOString(),
+                    isAfterStart,
+                    isBeforeEnd,
+                    isInRange,
+                    messagePreview: currentLine.substring(0, 100)
+                  });
+
                   if (isInRange && currentDate instanceof Date) {
                     messagesInRange++;
                     
@@ -499,6 +480,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                     
                     if (extractedLinks.length > 0) {
                       messagesWithLinks++;
+                      console.log(`Found ${extractedLinks.length} links in message within date range:`, {
+                        messageDate: currentDate.toISOString(),
+                        startDate: startDate?.toISOString(),
+                        endDate: endDate?.toISOString(),
+                        isAfterStart,
+                        isBeforeEnd,
+                        links: extractedLinks.map(l => l.url)
+                      });
                       
                       // Extract phone number from the message
                       let phoneNumber = undefined;
@@ -507,14 +496,33 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                         phoneNumber = phoneMatch[1].trim();
                       }
                       
-                      allLinksWithContext.push({
-                        url: extractedLinks[0].url,
-                        messageContext: currentLine,
-                        date: currentDate,
-                        fileName: groupName,
-                        phoneNumber: phoneNumber
-                      });
+                      // Double check date range before adding links
+                      if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
+                        const validDate: Date = currentDate; // Type assertion to ensure Date type
+                        allLinksWithContext.push(...extractedLinks.map(link => ({
+                          url: link.url,
+                          messageContext: currentLine,
+                          date: validDate,
+                          fileName: groupName,
+                          phoneNumber: phoneNumber
+                        })));
+                      } else {
+                        console.log(`Skipping message - failed secondary date range check:`, {
+                          messageDate: currentDate?.toISOString(),
+                          startDate: startDate?.toISOString(),
+                          endDate: endDate?.toISOString()
+                        });
+                      }
                     }
+                  } else {
+                    console.log(`Message excluded due to date range:`, {
+                      messageDate: currentDate.toISOString(),
+                      startDate: startDate?.toISOString(),
+                      endDate: endDate?.toISOString(),
+                      isAfterStart,
+                      isBeforeEnd,
+                      messagePreview: currentLine.substring(0, 100)
+                    });
                   }
                 }
                 
@@ -524,9 +532,44 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                 
                 // Also check the current line for links (in case they're in the same line as the date)
                 if (currentDate instanceof Date) {
-                  const dateLineLinks = extractLinksWithContext(line, currentDate, i);
-                  if (dateLineLinks.length > 0) {
-                    allLinksWithContext.push(...dateLineLinks);
+                  // Apply date filtering here too
+                  const isAfterStart = !startDate || isSameOrAfterDate(currentDate, startDate);
+                  const isBeforeEnd = !endDate || isSameOrBeforeDate(currentDate, endDate);
+                  const isInRange = isAfterStart && isBeforeEnd;
+                  
+                  if (isInRange) {
+                    const dateLineLinks = extractLinksWithContext(line, currentDate, i);
+                    if (dateLineLinks.length > 0) {
+                      console.log(`Found ${dateLineLinks.length} links in date line within range:`, {
+                        messageDate: currentDate.toISOString(),
+                        startDate: startDate?.toISOString(),
+                        endDate: endDate?.toISOString(),
+                        links: dateLineLinks.map(l => l.url)
+                      });
+                      
+                      // Extract phone number from the message
+                      let phoneNumber = undefined;
+                      const phoneMatch = line.match(phonePattern);
+                      if (phoneMatch && phoneMatch[1]) {
+                        phoneNumber = phoneMatch[1].trim();
+                      }
+                      
+                      const validDate: Date = currentDate;
+                      allLinksWithContext.push(...dateLineLinks.map(link => ({
+                        url: link.url,
+                        messageContext: line,
+                        date: validDate,
+                        fileName: groupName,
+                        phoneNumber: phoneNumber
+                      })));
+                    }
+                  } else {
+                    console.log(`Skipping date line - outside date range:`, {
+                      messageDate: currentDate.toISOString(),
+                      startDate: startDate?.toISOString(),
+                      endDate: endDate?.toISOString(),
+                      messagePreview: line.substring(0, 100)
+                    });
                   }
                 }
               } else {
@@ -544,9 +587,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
             
             // Process the last line if necessary
             if (currentLine && currentDate) {
-              const isInRange = (!startDate || currentDate >= startDate) && 
-                                (!endDate || currentDate <= endDate);
-              
+              const isAfterStart = !startDate || isSameOrAfterDate(currentDate, startDate);
+              const isBeforeEnd = !endDate || isSameOrBeforeDate(currentDate, endDate);
+              const isInRange = isAfterStart && isBeforeEnd;
+
+              console.log(`Detailed date range check for message:`, {
+                messageDate: currentDate.toISOString(),
+                startDate: startDate?.toISOString(),
+                endDate: endDate?.toISOString(),
+                isAfterStart,
+                isBeforeEnd,
+                isInRange,
+                messagePreview: currentLine.substring(0, 100)
+              });
+
               if (isInRange && currentDate instanceof Date) {
                 messagesInRange++;
                 
@@ -555,6 +609,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                 
                 if (extractedLinks.length > 0) {
                   messagesWithLinks++;
+                  console.log(`Found ${extractedLinks.length} links in message within date range:`, {
+                    messageDate: currentDate.toISOString(),
+                    startDate: startDate?.toISOString(),
+                    endDate: endDate?.toISOString(),
+                    isAfterStart,
+                    isBeforeEnd,
+                    links: extractedLinks.map(l => l.url)
+                  });
                   
                   // Extract phone number from the message
                   let phoneNumber = undefined;
@@ -563,14 +625,33 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                     phoneNumber = phoneMatch[1].trim();
                   }
                   
-                  allLinksWithContext.push({
-                    url: extractedLinks[0].url,
-                    messageContext: currentLine,
-                    date: currentDate,
-                    fileName: groupName,
-                    phoneNumber: phoneNumber
-                  });
+                  // Double check date range before adding links
+                  if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
+                    const validDate: Date = currentDate; // Type assertion to ensure Date type
+                    allLinksWithContext.push(...extractedLinks.map(link => ({
+                      url: link.url,
+                      messageContext: currentLine,
+                      date: validDate,
+                      fileName: groupName,
+                      phoneNumber: phoneNumber
+                    })));
+                  } else {
+                    console.log(`Skipping message - failed secondary date range check:`, {
+                      messageDate: currentDate?.toISOString(),
+                      startDate: startDate?.toISOString(),
+                      endDate: endDate?.toISOString()
+                    });
+                  }
                 }
+              } else {
+                console.log(`Message excluded due to date range:`, {
+                  messageDate: currentDate.toISOString(),
+                  startDate: startDate?.toISOString(),
+                  endDate: endDate?.toISOString(),
+                  isAfterStart,
+                  isBeforeEnd,
+                  messagePreview: currentLine.substring(0, 100)
+                });
               }
             }
             
@@ -635,8 +716,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                       // Process previous line if it exists and contains links
                       if (currentLine && currentDate) {
                         // Check if the message is within the date range
-                        const isInRange = (!startDate || currentDate >= startDate) && 
-                                              (!endDate || currentDate <= endDate);
+                        const isAfterStart = !startDate || currentDate >= startDate;
+                        const isBeforeEnd = !endDate || currentDate <= endDate;
+                        const isInRange = isAfterStart && isBeforeEnd;
                         
                         if (isInRange && currentDate instanceof Date) {
                           messagesInRange++;
@@ -654,13 +736,19 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                               phoneNumber = phoneMatch[1].trim();
                             }
                             
-                            allLinksWithContext.push({
-                              url: extractedLinks[0].url,
-                              messageContext: currentLine,
-                              date: currentDate,
-                              fileName: groupName,
-                              phoneNumber: phoneNumber
-                            });
+                            // Double check date range before adding links
+                            if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
+                              const validDate: Date = currentDate; // Type assertion to ensure Date type
+                              allLinksWithContext.push(...extractedLinks.map(link => ({
+                                url: link.url,
+                                messageContext: currentLine,
+                                date: validDate,
+                                fileName: groupName,
+                                phoneNumber: phoneNumber
+                              })));
+                            } else {
+                              console.log('Skipping message - invalid date:', currentDate);
+                            }
                           }
                         }
                       }
@@ -702,13 +790,19 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                           phoneNumber = phoneMatch[1].trim();
                         }
                         
-                        allLinksWithContext.push({
-                          url: extractedLinks[0].url,
-                          messageContext: currentLine,
-                          date: currentDate,
-                          fileName: groupName,
-                          phoneNumber: phoneNumber
-                        });
+                        // Ensure we have a valid date before adding links
+                        if (currentDate instanceof Date) {
+                          const validDate: Date = currentDate; // Type assertion to ensure Date type
+                          allLinksWithContext.push(...extractedLinks.map(link => ({
+                            url: link.url,
+                            messageContext: currentLine,
+                            date: validDate,
+                            fileName: groupName,
+                            phoneNumber: phoneNumber
+                          })));
+                        } else {
+                          console.log('Skipping message - invalid date:', currentDate);
+                        }
                       }
                     }
                   }
@@ -980,8 +1074,10 @@ async function generateSummary(
     
     להלן רשימת הלינקים שפורסמו:
     ${processedLinks.map(link => {
+      // Clean message context by removing date/time and sender info
+      const cleanedContext = link.messageContext.replace(/^\[.*?\]\s*~?\s*[^:]+:\s*/m, '');
       return `- הלינק: ${link.url}
-      - ההודעה המלאה: ${link.messageContext}
+      - ההודעה המלאה: ${cleanedContext}
       - קבוצה: ${link.fileName || 'לא ידוע'}
       - תאריך: ${link.date.toLocaleDateString('he-IL')}
       - שעה: ${link.date.toLocaleTimeString('he-IL')}`;
@@ -989,18 +1085,17 @@ async function generateSummary(
     
     אנא צור סיכום מפורט ושימושי של הלינקים הללו, עם החלוקה הבאה:
     1. התחל את הסיכום עם "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות"
-    2. בשורה השנייה, הוסף: "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה:*"
+    2. בשורה השנייה, הוסף: "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה*"
     3. מיד אחרי הכותרת, הוסף שורה עם ${dateRangeInfo ? `"${dateRangeInfo}"` : `תאריך הסיכום: "תאריך-${summaryDateInfo}"`}
     4. חלק את הלינקים לקטגוריות הגיוניות לפי תוכנם (כמו כלים ליזמים, פלטפורמות בנייה, מאמרים, פוסטים וכו')
     5. עבור כל לינק, תן את המידע הבא במבנה קבוע:
        - לינק: [URL]
        - תיאור: משפט קצר ומדויק המסביר את המטרה העיקרית או הפונקציה של הלינק
-       - קבוצה: שם הקבוצה שבה פורסם הלינק
-       - ההקשר המלא של ההודעה: הצג את ההודעה המלאה שבה הלינק פורסם (השמט סעיף זה אם ההודעה מכילה רק את הלינק ללא תוכן נוסף)
+       - קבוצה: [שם הקבוצה המדויק כפי שמופיע בשדה fileName]
+       - ההקשר המלא של ההודעה: הצג את ההודעה המלאה רק אם היא מכילה תוכן נוסף מעבר ללינק עצמו
        - נקודות מפתח:
          • 2-3 נקודות עיקריות המציגות את התכונות, היכולות או התובנות החשובות
        - ערך למשתמש: הסבר ברור מתי, איך או למה הלינק הזה יהיה שימושי לקהל היעד (יזמים, מפתחים, מנהלי מוצר וכו')
-       - זמן/מורכבות (אופציונלי): ציין זמן משוער לצפייה/קריאה (לסרטונים/מאמרים) או רמת מורכבות (לכלים/SaaS)
     6. סדר את הלינקים בכל קטגוריה לפי רלוונטיות
     
     הנחיות לפורמט: 
@@ -1008,7 +1103,9 @@ async function generateSummary(
     - השתמש בנקודות (•) לפריטים בתוך כל לינק
     - הקפד על מבנה אחיד וברור לכל הלינקים
     - הסיכום צריך להיות קל להעתקה והדבקה לקבוצת וואטסאפ
-    - אם ההודעה מכילה רק את הלינק, ללא תוכן נוסף משמעותי, אל תכלול את סעיף "ההקשר המלא של ההודעה" בכלל
+    - השתמש בכוכבית בודדת (*) בתחילת ובסוף טקסט להדגשה, לא בכוכבית כפולה
+    - הצג את סעיף "ההקשר המלא של ההודעה" רק אם ההודעה מכילה תוכן נוסף מעבר ללינק עצמו
+    - הקפד להציג את שם הקבוצה המדויק בסעיף "קבוצה"
     
     חשוב: עבור כל לינק, נסה להבין את התוכן שלו ולספק מידע אמיתי ושימושי. אל תמציא מידע אם אינך בטוח. הסיכום צריך להיות תמציתי, ברור ומועיל.
   `;
@@ -1061,14 +1158,16 @@ async function generateSummary(
         // Use a bare minimum approach
         const simplifiedPrompt = `סכם את הלינקים הבאים בצורה מובנית ושימושית:
           ${processedLinks.slice(0, 20).map(link => {
+            // Clean message context by removing date/time and sender info
+            const cleanedContext = link.messageContext.replace(/^\[.*?\]\s*~?\s*[^:]+:\s*/m, '');
             return `- הלינק: ${link.url}
-            - ההודעה המלאה: ${link.messageContext}
+            - ההודעה המלאה: ${cleanedContext}
             - קבוצה: ${link.fileName || 'לא ידוע'}
             - תאריך: ${link.date.toLocaleDateString('he-IL')}`;
           }).join('\n\n')}
           
           התחל את הסיכום עם: "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות"
-          בשורה השנייה, הוסף: "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה:*"
+          בשורה השנייה, הוסף: "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה*"
           בשורה השלישית, הוסף: ${dateRangeInfo ? `"${dateRangeInfo}"` : `"תאריך-${summaryDateInfo}"`}
           
           חלק את הלינקים לקטגוריות הגיוניות.
@@ -1076,14 +1175,17 @@ async function generateSummary(
           עבור כל לינק, הצג במבנה הבא:
           - לינק: [URL]
           - תיאור: משפט קצר על מטרת הלינק
-          - קבוצה: שם הקבוצה שבה פורסם הלינק
-          - ההקשר המלא של ההודעה: ההודעה המלאה שבה פורסם הלינק (השמט סעיף זה אם ההודעה מכילה רק את הלינק ללא תוכן נוסף)
+          - קבוצה: [שם הקבוצה המדויק]
+          - ההקשר המלא של ההודעה: הצג רק אם ההודעה מכילה תוכן נוסף מעבר ללינק
           - נקודות מפתח:
             • תכונה/תובנה עיקרית אחת
           - ערך למשתמש: למי ומתי הלינק שימושי
           
-          הקפד על מבנה אחיד, תמציתי וברור בעברית.
-          אם ההודעה מכילה רק את הלינק, ללא תוכן נוסף משמעותי, אל תכלול את סעיף "ההקשר המלא של ההודעה" בכלל.
+          הקפד על:
+          - מבנה אחיד ותמציתי בעברית
+          - שימוש בכוכבית בודדת (*) להדגשה
+          - הצגת שם הקבוצה המדויק
+          - הצגת הקשר ההודעה רק אם יש תוכן נוסף מעבר ללינק
         `;
         
         console.log(`Simplified prompt length: ${simplifiedPrompt.length} characters`);
