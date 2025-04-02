@@ -89,7 +89,8 @@ function logTime(label: string, startTime: number) {
 }
 
 // Simplified but more inclusive URL pattern that will catch both full URLs and domain-only links
-const urlPattern = /((?:https?:\/\/)?(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_+.~#?&//=]*))/gi;
+// Updated TLD part to [a-zA-Z]{2,6} to avoid matching numbers like '.0'
+const urlPattern = /((?:https?:\/\/)?(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z]{2,6}\b(?:[-a-zA-Z0-9()@:%_+.~#?&//=]*))/gi;
 
 // Updated regex pattern to match multiple WhatsApp date formats
 // Supports formats like:
@@ -139,22 +140,17 @@ function extractDateFromMessage(messageLine: string): Date | null {
     // Format: DD/MM/YYYY or MM/DD/YYYY
     const parts = dateStr.split('/');
     
-    // Heuristic: if middle number is > 12, it's day in DD/MM/YY
-    // If first number is > 12, it's day in DD/MM/YY
-    // Otherwise assume MM/DD/YY (US format)
-    const firstNumber = parseInt(parts[0], 10);
-    const middleNumber = parseInt(parts[1], 10);
-    
-    if (middleNumber > 12 || firstNumber > 12) {
-      day = firstNumber;
-      month = middleNumber;
-      year = parseInt(parts[2], 10);
-    } else {
-      // US format MM/DD/YY - less common but possible
-      month = firstNumber;
-      day = middleNumber;
-      year = parseInt(parts[2], 10);
-    }
+    // Prioritize DD/MM/YYYY format for Israel/European locale
+    day = parseInt(parts[0], 10);
+    month = parseInt(parts[1], 10);
+    year = parseInt(parts[2], 10);
+
+    // Basic validation: if the parsed month is invalid, maybe swap (less likely needed)
+    if (month < 1 || month > 12) {
+      console.warn(`Potentially ambiguous date ${dateStr}: Parsed month ${month} is invalid. Sticking with DD/MM interpretation.`);
+      // Optional: Could add fallback logic here to try MM/DD if DD/MM seems invalid,
+      // but sticking to DD/MM is safer given the user's locale.
+    } 
   }
   
   // Convert 2-digit year to 4-digit year
@@ -207,8 +203,11 @@ function extractDateFromMessage(messageLine: string): Date | null {
   }
   
   try {
-    const parsedDate = new Date(year, month - 1, day, hour, minute, second);
-    console.log(`Parsed date: ${parsedDate.toISOString()}`);
+    // Use Date.UTC to treat the parsed components as UTC directly
+    const utcTimestamp = Date.UTC(year, month - 1, day, hour, minute, second);
+    const parsedDate = new Date(utcTimestamp);
+    // Log the parsed date in UTC for consistency
+    console.log(`Parsed date (UTC): ${parsedDate.toISOString()}`);
     return parsedDate;
   } catch (e) {
     console.error('Error creating date object:', e);
@@ -252,11 +251,32 @@ interface ResponseData {
   details?: unknown;
 }
 
+// --- JSON Mode Schema Definitions ---
+
+interface SummarizedLink {
+  name: string;        // Name of the tool/site
+  type: string;        // Type: SaaS, article, video, etc.
+  description: string; // Short description
+  context?: string;     // Context from the message (optional)
+  group?: string;       // Group name (optional)
+  keyPoints: string[]; // 2-3 key points/features
+  userValue: string;   // Value for the target audience
+  complexity?: string;  // Optional: Estimated time/complexity
+  url: string;         // The actual URL
+}
+
+// The main structure: Category names mapped to arrays of links
+// Using Record<string, SummarizedLink[]> for dynamic category names
+type SummaryJson = Record<string, SummarizedLink[]>;
+
+// --- End JSON Mode Schema Definitions ---
+
 // New interface to store links with their context
 interface LinkWithContext {
   url: string;
   messageContext: string;
   date: Date;
+  groupName?: string;
 }
 
 // Define OpenAI error type
@@ -330,6 +350,39 @@ function extractLinksWithContext(message: string, messageDate: Date, lineNumber:
   return extractedLinks;
 }
 
+// Helper function to extract group name from filename
+function extractGroupName(fileName: string): string | undefined {
+  let match;
+
+  // 1. Try standard format: "WhatsApp Chat with [Group Name]_chat.txt" (or without _chat)
+  match = fileName.match(/^WhatsApp Chat with (.*?)(?:_chat)?\.txt$/i);
+  if (match && match[1]) {
+    console.log(`extractGroupName: Matched Pattern 1 for ${fileName}`);
+    return match[1].trim();
+  }
+
+  // 2. Try user's format: "WhatsApp Chat - [Group Name].(txt|zip)"
+  match = fileName.match(/^WhatsApp Chat - (.*?)\.(?:txt|zip)$/i);
+  if (match && match[1]) {
+    console.log(`extractGroupName: Matched Pattern 2 for ${fileName}`);
+    return match[1].trim();
+  }
+
+  // 3. Try generic format: "[Group Name].txt" (but avoid generic names)
+  match = fileName.match(/^(.*?)\.txt$/i);
+  if (match && match[1]) {
+    const potentialName = match[1].trim();
+    // Avoid matching just '_chat' or other likely non-names if it's the only pattern that matched
+    if (potentialName.toLowerCase() !== '_chat' && !potentialName.toLowerCase().startsWith('whatsapp chat')) {
+         console.log(`extractGroupName: Matched Pattern 3 for ${fileName}`);
+         return potentialName;
+    }
+  }
+
+  console.log(`extractGroupName: No pattern matched for ${fileName}`);
+  return undefined; // Return undefined if no suitable name could be extracted
+}
+
 export async function POST(request: NextRequest): Promise<NextResponse<ResponseData>> {
   const startTime = Date.now();
   console.log(`Starting file processing at ${new Date().toISOString()}`);
@@ -360,6 +413,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       endDate = setToEndOfDay(endDate);
       console.log(`Parsed end date: ${endDate.toISOString()}`);
     }
+    
+    // Log the final date range being used for filtering
+    console.log(`Filtering with Start Date: ${startDate ? startDate.toISOString() : 'None'}`);
+    console.log(`Filtering with End Date  : ${endDate ? endDate.toISOString() : 'None'}`);
     
     // Helper function to create progress responses
     const responseWithProgress = (step: string, data: ResponseData, status = 200) => {
@@ -431,8 +488,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
         // First try with the standard pattern: *_chat.txt
         for (const fileName in zip.files) {
           if (fileName.endsWith('_chat.txt')) {
+            const groupName = extractGroupName(fileName); // Extract group name
+            console.log(`>>> Extracted Group Name (Standard Loop): '${groupName || 'undefined'}' for file '${fileName}'`); // Log extracted name
             chatFilesFound++;
-            console.log(`Processing chat file (standard format): ${fileName}`);
+            console.log(`Processing chat file (standard format): ${fileName}, Group: ${groupName || 'Unknown'}`);
             
             let chatFileContent;
             try {
@@ -455,6 +514,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
             // Step 3: Extract links
             for (let i = 0; i < lines.length; i++) {
               const line: string = lines[i];
+              // Log the raw line being processed for debugging
+              // console.log(`[Line ${i+1}] Processing: ${line.substring(0, 100)}`); 
               
               // Check if line starts with a date
               const dateMatch = line.match(datePattern);
@@ -468,26 +529,43 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                   
                   if (isInRange && currentDate instanceof Date) {
                     messagesInRange++;
+                    console.log(`  -> Previous message in range (Date: ${currentDate.toISOString()}). Extracting links.`);
                     
                     // Extract links from the complete message
                     const extractedLinks = extractLinksWithContext(currentLine, currentDate, i);
                     
                     if (extractedLinks.length > 0) {
                       messagesWithLinks++;
+                      // Add groupName to each extracted link
+                      extractedLinks.forEach(link => link.groupName = groupName);
                       allLinksWithContext.push(...extractedLinks);
                     }
+                  } else if (currentDate instanceof Date) {
+                    console.log(`  -> Previous message OUT of range (Date: ${currentDate.toISOString()}).`);
                   }
                 }
                 
                 // Extract the new date and start a new message
                 currentDate = extractDateFromMessage(line);
+                console.log(`  -> Parsed date from line: ${currentDate ? currentDate.toISOString() : 'null'}`);
                 currentLine = line;
                 
                 // Also check the current line for links (in case they're in the same line as the date)
                 if (currentDate instanceof Date) {
-                  const dateLineLinks = extractLinksWithContext(line, currentDate, i);
-                  if (dateLineLinks.length > 0) {
-                    allLinksWithContext.push(...dateLineLinks);
+                  const isInRange = (!startDate || currentDate >= startDate) && 
+                                    (!endDate || currentDate <= endDate);
+                  console.log(`  -> Checking date line: Date=${currentDate.toISOString()}, Start=${startDate?.toISOString()}, End=${endDate?.toISOString()}, InRange=${isInRange}`);
+                                      
+                  if (isInRange) {
+                    console.log(`     -> Date line IN range. Extracting links.`);
+                    const dateLineLinks = extractLinksWithContext(line, currentDate, i);
+                    if (dateLineLinks.length > 0) {
+                      // Add groupName to each extracted link
+                      dateLineLinks.forEach(link => link.groupName = groupName);
+                      allLinksWithContext.push(...dateLineLinks);
+                    }
+                  } else if (currentDate instanceof Date) {
+                    console.log(`  -> Previous message OUT of range (Date: ${currentDate.toISOString()}).`);
                   }
                 }
               } else {
@@ -516,6 +594,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                 
                 if (extractedLinks.length > 0) {
                   messagesWithLinks++;
+                  // Add groupName to each extracted link
+                  extractedLinks.forEach(link => link.groupName = groupName);
                   allLinksWithContext.push(...extractedLinks);
                 }
               }
@@ -555,8 +635,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                 });
                 
                 if (hasWhatsAppFormat) {
+                  const groupName = extractGroupName(fileName); // Extract group name
+                  console.log(`>>> Extracted Group Name (Alternative Loop): '${groupName || 'undefined'}' for file '${fileName}'`); // Log extracted name
                   chatFilesFound++;
-                  console.log(`Processing chat file (alternative format): ${fileName}`);
+                  console.log(`Processing chat file (alternative format): ${fileName}, Group: ${groupName || 'Unknown'}`);
                   
                   // Split by lines and process each line
                   const allLines = content.split('\n');
@@ -593,6 +675,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                           
                           if (extractedLinks.length > 0) {
                             messagesWithLinks++;
+                            // Add groupName to each extracted link
+                            extractedLinks.forEach(link => link.groupName = groupName);
                             allLinksWithContext.push(...extractedLinks);
                           }
                         }
@@ -627,6 +711,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                       
                       if (extractedLinks.length > 0) {
                         messagesWithLinks++;
+                        // Add groupName to each extracted link
+                        extractedLinks.forEach(link => link.groupName = groupName);
                         allLinksWithContext.push(...extractedLinks);
                       }
                     }
@@ -698,12 +784,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
     const fileProcessingTime = logTime('File processing', fileProcessingStartTime);
     console.log(`File processing completed in ${fileProcessingTime}ms`);
     
-    // Remove duplicates
-    const uniqueLinksWithContext = [...new Set(allLinksWithContext)];
+    // Remove duplicates based on URL, keeping the first occurrence's context
+    const uniqueLinksByURL: LinkWithContext[] = [];
+    const seenUrls = new Set<string>();
     
-    console.log(`Found ${uniqueLinksWithContext.length} unique links from ${allLinksWithContext.length} total links`);
+    for (const link of allLinksWithContext) {
+      if (!seenUrls.has(link.url)) {
+        seenUrls.add(link.url);
+        uniqueLinksByURL.push(link);
+      }
+    }
     
-    if (uniqueLinksWithContext.length === 0) {
+    console.log(`Found ${uniqueLinksByURL.length} unique links (by URL) from ${allLinksWithContext.length} total links found`);
+    
+    if (uniqueLinksByURL.length === 0) {
       // NEW: Enhanced user-friendly error message with more details
       const errorMessage = startDate || endDate 
           ? 'לא נמצאו לינקים בטווח התאריכים שנבחר' 
@@ -734,12 +828,12 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
 
     // Strictly limit links to ensure processing completes within timeout
     const MAX_LINKS = 30; // Further reduced limit for higher reliability
-    const linksToProcess = uniqueLinksWithContext.length > MAX_LINKS 
-      ? uniqueLinksWithContext.slice(0, MAX_LINKS) 
-      : uniqueLinksWithContext;
+    const linksToProcess = uniqueLinksByURL.length > MAX_LINKS 
+      ? uniqueLinksByURL.slice(0, MAX_LINKS) 
+      : uniqueLinksByURL;
     
-    if (uniqueLinksWithContext.length > MAX_LINKS) {
-      console.log(`Limiting links from ${uniqueLinksWithContext.length} to ${MAX_LINKS} to prevent timeout`);
+    if (uniqueLinksByURL.length > MAX_LINKS) {
+      console.log(`Limiting links from ${uniqueLinksByURL.length} to ${MAX_LINKS} to prevent timeout`);
     }
 
     // Step 4: AI Analysis
@@ -826,6 +920,49 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
   }
 }
 
+// --- JSON Mode Rendering Function ---
+
+function renderSummaryFromJson(summaryJson: SummaryJson, dateRangeInfo: string, summaryDateInfo: string): string {
+  let output = "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות\n\n";
+  output += "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה:*\n";
+  output += `${dateRangeInfo ? dateRangeInfo : `תאריך הסיכום: תאריך-${summaryDateInfo}`}\n\n`;
+
+  // Loop through categories in the JSON object
+  for (const category in summaryJson) {
+    if (Object.prototype.hasOwnProperty.call(summaryJson, category)) {
+      output += `*${category.trim()}*\n`; // Category name (bold)
+      const linksInCategory = summaryJson[category];
+
+      // Loop through links within the category
+      for (const link of linksInCategory) {
+        output += `  - *${link.name || 'שם לא ידוע'}* - [${link.type || 'סוג לא ידוע'}]\n`; // Name (bold) - [Type]
+        output += `    - תיאור: ${link.description || 'אין תיאור'}\n`;
+        if (link.context) {
+          output += `    - הקשר ההודעה: ${link.context}\n`;
+        }
+        if (link.group) {
+          output += `    - קבוצה: ${link.group}\n`;
+        }
+        if (link.keyPoints && link.keyPoints.length > 0) {
+          output += `    - נקודות מפתח:\n`;
+          link.keyPoints.forEach(point => {
+            output += `      • ${point}\n`;
+          });
+        }
+        output += `    - ערך למשתמש: ${link.userValue || 'ערך לא צוין'}\n`;
+        if (link.complexity) {
+          output += `    - זמן/מורכבות: ${link.complexity}\n`;
+        }
+        output += `    - לינק: ${link.url}\n\n`; // Add extra newline for spacing
+      }
+    }
+  }
+
+  return output.trim(); // Remove trailing whitespace
+}
+
+// --- End JSON Mode Rendering Function ---
+
 async function generateSummary(
   links: LinkWithContext[], 
   startDate: Date | null = null, 
@@ -894,59 +1031,59 @@ async function generateSummary(
 
   console.log(`Using ${processedLinks.length} links in prompt (estimated ${processedLinks.reduce((sum, l) => sum + getMessageSize(l), 0)} chars)`);
   
+  // V2 Prompt requesting JSON output
   const prompt = `
-    אני מנהל קהילה של יזמי סולו ואני רוצה לסכם לינקים שפורסמו בקבוצות וואטסאפ שלנו ${dateRangeInfo ? dateRangeInfo : ''}.
+    אתה עוזר AI שתפקידך לסכם לינקים מקבוצות וואטסאפ של קהילת יזמי סולו.
+    המטרה היא ליצור אובייקט JSON המכיל את המידע על הלינקים, מקובץ לפי קטגוריות.
     
-    להלן רשימת הלינקים שפורסמו:
+    הנה הלינקים שחולצו ${dateRangeInfo ? dateRangeInfo : ''}:
     ${processedLinks.map(link => {
-      return `- הלינק: ${link.url}
-      - ההודעה המלאה: ${link.messageContext.replace(link.url, '')}
-      - תאריך: ${link.date.toLocaleDateString('he-IL')}
-      - שעה: ${link.date.toLocaleTimeString('he-IL')}`;
-    }).join('\n\n')}
+      // Create a string representation for the prompt
+      return JSON.stringify({
+        url: link.url,
+        messageContext: link.messageContext.replace(link.url, ''), // Avoid redundancy
+        date: link.date.toISOString(), // Use ISO string for clarity
+        groupName: link.groupName
+      });
+    }).join('\n')}
     
-    אנא צור סיכום מפורט ושימושי של הלינקים הללו, עם החלוקה הבאה:
-    1. התחל את הסיכום עם "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות"
-    2. בשורה השנייה, הוסף: "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה:*"
-    3. מיד אחרי הכותרת, הוסף שורה עם ${dateRangeInfo ? `"${dateRangeInfo}"` : `תאריך הסיכום: "תאריך-${summaryDateInfo}"`}
-    4. חלק את הלינקים לקטגוריות הגיוניות לפי תוכנם (כמו כלים ליזמים, פלטפורמות בנייה, מאמרים, פוסטים וכו')
-    5. עבור כל לינק, תן את המידע הבא במבנה קבוע:
-       - *שם הכלי/האתר* (בהדגשה) - [סוג הלינק: SaaS, כלי, סרטון, פוסט לינקדאין, מאמר, GitHub וכו']
-       - תיאור: משפט קצר ומדויק המסביר את המטרה העיקרית או הפונקציה של הלינק
-       - הקשר ההודעה: תקציר קצר של ההודעה שבה הלינק פורסם (אם רלוונטי)
-       - נקודות מפתח:
-         • 2-3 נקודות עיקריות המציגות את התכונות, היכולות או התובנות החשובות
-       - ערך למשתמש: הסבר ברור מתי, איך או למה הלינק הזה יהיה שימושי לקהל היעד (יזמים, מפתחים, מנהלי מוצר וכו')
-       - זמן/מורכבות (אופציונלי): ציין זמן משוער לצפייה/קריאה (לסרטונים/מאמרים) או רמת מורכבות (לכלים/SaaS)
-       - לינק: [URL]
-    6. סדר את הלינקים בכל קטגוריה לפי רלוונטיות
-    
-    הנחיות לפורמט: 
-    - הסיכום צריך להיות בעברית, מימין לשמאל
-    - השתמש באסטריקס אחד (*) בהתחלה ובסוף בשביל טקסט מודגש, למשל: *שם הכלי* ולא **שם הכלי**
-    - השתמש בנקודות (•) לפריטים בתוך כל לינק
-    - הקפד על מבנה אחיד וברור לכל הלינקים
-    - הסיכום צריך להיות קל להעתקה והדבקה לקבוצת וואטסאפ
-    
-    חשוב: עבור כל לינק, נסה להבין את התוכן שלו ולספק מידע אמיתי ושימושי. אל תמציא מידע אם אינך בטוח. הסיכום צריך להיות תמציתי, ברור ומועיל.
+    אנא צור אובייקט JSON בלבד, ללא טקסט נוסף לפניו או אחריו.
+    ה-JSON צריך להיות מבנה מסוג Record<string, Array>, כאשר:
+    - המפתחות (keys) הם שמות הקטגוריות ההגיוניות שמצאת (למשל: "כלי AI", "מאמרים מעניינים", "דיונים", "פיתוח ו-SaaS").
+    - הערכים (values) הם מערכים של אובייקטים, כאשר כל אובייקט מייצג לינק ומכיל את השדות הבאים:
+        * name: string (שם הכלי/האתר/המאמר)
+        * type: string (סוג הלינק: למשל SaaS, כלי AI, סרטון, פוסט לינקדאין, מאמר, GitHub, דיון)
+        * description: string (משפט קצר ומדויק המסביר את המטרה)
+        * context: string (optional - תקציר קצר של ההודעה שבה הלינק פורסם)
+        * group: string (שם הקבוצה בה הלינק פורסם - חובה לכלול אם סופק בשדה groupName בקלט)
+        * keyPoints: string[] (מערך של 2-3 נקודות עיקריות)
+        * userValue: string (הסבר על הערך לקהל היעד - יזמים, מפתחים וכו')
+        * complexity: string (optional - הערכת זמן/מורכבות)
+        * url: string (ה-URL המקורי)
+        
+    חשוב:
+    - נתח את תוכן הלינקים וההקשר שלהם כדי ליצור את הנתונים.
+    - קבץ את הלינקים לקטגוריות משמעותיות.
+    - ודא שהפלט הוא JSON תקין בלבד.
   `;
 
-  console.log('Making API call to OpenAI');
+  console.log('Making API call to OpenAI requesting JSON');
   console.log(`Prompt length: ${prompt.length} characters`);
   
   try {
-    console.log('Attempting OpenAI API call with gpt-3.5-turbo');
+    console.log('Attempting OpenAI API call with gpt-4o-mini');
     const apiCallStartTime = Date.now();
     
-    // First try with GPT-3.5 for speed
+    // First try with the faster and more capable gpt-4o-mini
     const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo', // Use faster model for production
+      model: 'gpt-4o-mini', // Changed from gpt-3.5-turbo
       messages: [
-        { role: 'system', content: 'אתה עוזר מועיל המתמחה בארגון וסיכום מידע עבור קבוצות וואטסאפ. כתוב בעברית, מימין לשמאל.' },
+        { role: 'system', content: 'אתה עוזר AI מומחה ביצירת JSON מובנה לפי סכמה מבוקשת. הפלט שלך חייב להיות JSON תקין בלבד.' }, // Updated system message
         { role: 'user', content: prompt }
       ],
-      temperature: 0.7,
-      max_tokens: 2000, // Reduce tokens for faster response
+      response_format: { type: "json_object" }, // Enable JSON mode
+      temperature: 0.2, // Lowered temperature for consistency
+      max_tokens: 3000, // Adjusted tokens slightly, JSON output can be verbose 
     });
     
     const apiCallTime = Date.now() - apiCallStartTime;
@@ -956,7 +1093,30 @@ async function generateSummary(
     const totalTime = Date.now() - summaryStartTime;
     console.log(`Total summary generation time: ${totalTime}ms`);
     
-    return response.choices[0].message.content || 'לא הצלחתי לייצר סיכום';
+    // Step 3: Parse the JSON response
+    const jsonContent = response.choices[0].message.content;
+    if (!jsonContent) {
+      console.error('OpenAI response content is null or empty.');
+      throw new Error('קיבלנו תשובה ריקה מ-OpenAI');
+    }
+
+    let summaryJson: SummaryJson;
+    try {
+      summaryJson = JSON.parse(jsonContent) as SummaryJson;
+      console.log('Successfully parsed JSON response from OpenAI.');
+      // Log the raw JSON object received from the AI
+      console.log('>>> Raw JSON received from AI:', JSON.stringify(summaryJson, null, 2)); 
+      // Optional: Add validation here using Zod or similar if needed
+    } catch (parseError) {
+      console.error('Failed to parse JSON response from OpenAI:', parseError);
+      console.error('Raw OpenAI response content:', jsonContent);
+      throw new Error('קיבלנו תשובה לא תקינה (לא JSON) מ-OpenAI');
+    }
+
+    // Step 4 & 5: Render JSON to formatted text and return
+    const formattedSummary = renderSummaryFromJson(summaryJson, dateRangeInfo, summaryDateInfo);
+    return formattedSummary;
+
   } catch (error) {
     console.error('Error in OpenAI API call:', {
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -981,7 +1141,7 @@ async function generateSummary(
           ${processedLinks.slice(0, 20).map(link => {
             return `- הלינק: ${link.url}
             - ההודעה המלאה: ${link.messageContext.replace(link.url, '')}
-            - תאריך: ${link.date.toLocaleDateString('he-IL')}`;
+            - תאריך: ${link.date.toLocaleDateString('he-IL')}${link.groupName ? `\n            - קבוצה: ${link.groupName}` : ''}`;
           }).join('\n\n')}
           
           התחל את הסיכום עם: "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות"
@@ -994,6 +1154,7 @@ async function generateSummary(
           - *שם הכלי/האתר* - [סוג הלינק]
           - תיאור: משפט קצר על מטרת הלינק
           - הקשר ההודעה: תקציר של ההודעה בה פורסם הלינק (אם יש)
+          - קבוצה: שם הקבוצה (אם ידוע)
           - נקודות מפתח:
             • תכונה/תובנה עיקרית אחת
           - ערך למשתמש: למי ומתי הלינק שימושי
@@ -1005,12 +1166,12 @@ async function generateSummary(
         console.log(`Simplified prompt length: ${simplifiedPrompt.length} characters`);
         
         const fallbackResponse = await openai.chat.completions.create({
-          model: 'gpt-3.5-turbo',
+          model: 'gpt-4o-mini', // Changed from gpt-3.5-turbo
           messages: [
-            { role: 'system', content: 'תן תשובה קצרה בעברית.' },
+            { role: 'system', content: 'תן תשובה קצרה ועקבית במבנה המבוקש בעברית.' }, // System message adjusted
             { role: 'user', content: simplifiedPrompt }
           ],
-          temperature: 0.5,
+          temperature: 0.2, // Lowered temperature for consistency
           max_tokens: 1000,
         });
         
