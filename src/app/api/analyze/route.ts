@@ -215,17 +215,17 @@ function extractDateFromMessage(messageLine: string): Date | null {
   }
 }
 
-// Utility function to set a date to the start of the day (00:00:00)
-function setToStartOfDay(date: Date): Date {
+// Utility function to set a date to the start of the day UTC (00:00:00)
+function setToStartOfDayUTC(date: Date): Date {
   const newDate = new Date(date);
-  newDate.setHours(0, 0, 0, 0);
+  newDate.setUTCHours(0, 0, 0, 0); // Use UTC method
   return newDate;
 }
 
-// Utility function to set a date to the end of the day (23:59:59.999)
-function setToEndOfDay(date: Date): Date {
+// Utility function to set a date to the end of the day UTC (23:59:59.999)
+function setToEndOfDayUTC(date: Date): Date {
   const newDate = new Date(date);
-  newDate.setHours(23, 59, 59, 999);
+  newDate.setUTCHours(23, 59, 59, 999); // Use UTC method
   return newDate;
 }
 
@@ -258,7 +258,6 @@ interface SummarizedLink {
   type: string;        // Type: SaaS, article, video, etc.
   description: string; // Short description
   context?: string;     // Context from the message (optional)
-  group?: string;       // Group name (optional)
   keyPoints: string[]; // 2-3 key points/features
   userValue: string;   // Value for the target audience
   complexity?: string;  // Optional: Estimated time/complexity
@@ -274,7 +273,8 @@ type SummaryJson = Record<string, SummarizedLink[]>;
 // New interface to store links with their context
 interface LinkWithContext {
   url: string;
-  messageContext: string;
+  messageContext: string; // Snippet around the link for AI prompt
+  fullMessageText?: string; // Full message text (cleaned) for final display
   date: Date;
   groupName?: string;
 }
@@ -310,38 +310,46 @@ function isSystemMessage(message: string): boolean {
 }
 
 // Extract links from a message with context
-function extractLinksWithContext(message: string, messageDate: Date, lineNumber: number): LinkWithContext[] {
+function extractLinksWithContext(
+  fullCleanedMessage: string, // Accept the full cleaned message
+  messageDate: Date, 
+  lineNumber: number
+): LinkWithContext[] {
   const extractedLinks: LinkWithContext[] = [];
   
-  if (!message || isSystemMessage(message)) {
+  // Use the full message for system message check
+  if (!fullCleanedMessage || isSystemMessage(fullCleanedMessage)) {
     return extractedLinks;
   }
   
-  // Simple case-insensitive check for "get-zenith.com" or similar patterns that might be missed
-  if (message.toLowerCase().includes('get-zenith.com')) {
+  // Use the full message for direct check
+  if (fullCleanedMessage.toLowerCase().includes('get-zenith.com')) {
     console.log(`Found Get-zenith.com at line ${lineNumber} through direct check`);
     extractedLinks.push({
       url: 'Get-zenith.com',
-      messageContext: message,
+      messageContext: fullCleanedMessage.substring(0, 300), // Provide a snippet for context
+      fullMessageText: fullCleanedMessage,
       date: messageDate
     });
   }
   
-  const linksInMessage = Array.from(message.matchAll(urlPattern));
+  // Use the full message to find links
+  const linksInMessage = Array.from(fullCleanedMessage.matchAll(urlPattern));
   
   if (linksInMessage.length > 0) {
-    logLinkExtraction(lineNumber, message, linksInMessage);
+    logLinkExtraction(lineNumber, fullCleanedMessage, linksInMessage);
     
     linksInMessage.forEach(match => {
-      // Get context around this specific link
+      // Calculate snippet context based on link position in the full message
       const linkIndex = match.index || 0;
       const startContext = Math.max(0, linkIndex - 100);
-      const endContext = Math.min(message.length, linkIndex + match[0].length + 100);
-      const linkContext = message.substring(startContext, endContext).trim();
+      const endContext = Math.min(fullCleanedMessage.length, linkIndex + match[0].length + 100);
+      const linkContextSnippet = fullCleanedMessage.substring(startContext, endContext).trim();
       
       extractedLinks.push({
         url: match[0],
-        messageContext: linkContext,
+        messageContext: linkContextSnippet, // Store the snippet for AI prompt
+        fullMessageText: fullCleanedMessage, // Store the full cleaned message
         date: messageDate
       });
     });
@@ -403,15 +411,27 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
     let endDate: Date | null = null;
     
     if (startDateStr) {
-      startDate = new Date(startDateStr);
-      startDate = setToStartOfDay(startDate);
-      console.log(`Parsed start date: ${startDate.toISOString()}`);
+      // Parse the incoming ISO string
+      const parsedStartDate = new Date(startDateStr);
+      // Extract year, month, day based on the server's local interpretation of the timestamp
+      const startYear = parsedStartDate.getFullYear();
+      const startMonth = parsedStartDate.getMonth(); // 0-indexed
+      const startDay = parsedStartDate.getDate();
+      // Construct the start boundary precisely at midnight UTC of that *local* day
+      startDate = new Date(Date.UTC(startYear, startMonth, startDay, 0, 0, 0, 0));
+      console.log(`Parsed start date boundary (UTC): ${startDate.toISOString()}`);
     }
     
     if (endDateStr) {
-      endDate = new Date(endDateStr);
-      endDate = setToEndOfDay(endDate);
-      console.log(`Parsed end date: ${endDate.toISOString()}`);
+      // Parse the incoming ISO string
+      const parsedEndDate = new Date(endDateStr);
+       // Extract year, month, day based on the server's local interpretation of the timestamp
+      const endYear = parsedEndDate.getFullYear();
+      const endMonth = parsedEndDate.getMonth(); // 0-indexed
+      const endDay = parsedEndDate.getDate();
+      // Construct the end boundary precisely at the last millisecond UTC of that *local* day
+      endDate = new Date(Date.UTC(endYear, endMonth, endDay, 23, 59, 59, 999));
+      console.log(`Parsed end date boundary (UTC)  : ${endDate.toISOString()}`);
     }
     
     // Log the final date range being used for filtering
@@ -532,12 +552,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                     console.log(`  -> Previous message in range (Date: ${currentDate.toISOString()}). Extracting links.`);
                     
                     // Extract links from the complete message
-                    const extractedLinks = extractLinksWithContext(currentLine, currentDate, i);
+                    // Clean timestamp from the *full* currentLine before passing
+                    const cleanedFullMessage = currentLine.replace(/^\s*\[\d{1,2}\/\d{1,2}\/\d{2,4}, \d{1,2}:\d{1,2}(?::\d{1,2})?\]\s*/, '');
+                    const extractedLinks = extractLinksWithContext(cleanedFullMessage, currentDate, i);
                     
                     if (extractedLinks.length > 0) {
                       messagesWithLinks++;
                       // Add groupName to each extracted link
-                      extractedLinks.forEach(link => link.groupName = groupName);
+                      extractedLinks.forEach(link => {
+                        link.groupName = groupName;
+                        console.log(`>>> DEBUG Storing Link Context (std-prev): URL=${link.url}, FullText="${link.fullMessageText?.substring(0,100)}..."`); // Log stored context
+                      });
                       allLinksWithContext.push(...extractedLinks);
                     }
                   } else if (currentDate instanceof Date) {
@@ -558,10 +583,15 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                                       
                   if (isInRange) {
                     console.log(`     -> Date line IN range. Extracting links.`);
-                    const dateLineLinks = extractLinksWithContext(line, currentDate, i);
+                    // Clean timestamp from the *current line* before passing
+                    const cleanedDateLine = line.replace(/^\s*\[\d{1,2}\/\d{1,2}\/\d{2,4}, \d{1,2}:\d{1,2}(?::\d{1,2})?\]\s*/, '');
+                    const dateLineLinks = extractLinksWithContext(cleanedDateLine, currentDate, i);
                     if (dateLineLinks.length > 0) {
                       // Add groupName to each extracted link
-                      dateLineLinks.forEach(link => link.groupName = groupName);
+                      dateLineLinks.forEach(link => {
+                        link.groupName = groupName;
+                        console.log(`>>> DEBUG Storing Link Context (std-curr): URL=${link.url}, FullText="${link.fullMessageText?.substring(0,100)}..."`); // Log stored context
+                      });
                       allLinksWithContext.push(...dateLineLinks);
                     }
                   } else if (currentDate instanceof Date) {
@@ -590,12 +620,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                 messagesInRange++;
                 
                 // Extract links from the complete message
-                const extractedLinks = extractLinksWithContext(currentLine, currentDate, lines.length);
+                // Clean timestamp from the *full* currentLine before passing
+                const cleanedLastLine = currentLine.replace(/^\s*\[\d{1,2}\/\d{1,2}\/\d{2,4}, \d{1,2}:\d{1,2}(?::\d{1,2})?\]\s*/, '');
+                const extractedLinks = extractLinksWithContext(cleanedLastLine, currentDate, lines.length);
                 
                 if (extractedLinks.length > 0) {
                   messagesWithLinks++;
                   // Add groupName to each extracted link
-                  extractedLinks.forEach(link => link.groupName = groupName);
+                  extractedLinks.forEach(link => {
+                    link.groupName = groupName;
+                    console.log(`>>> DEBUG Storing Link Context (std-last): URL=${link.url}, FullText="${link.fullMessageText?.substring(0,100)}..."`); // Log stored context
+                  });
                   allLinksWithContext.push(...extractedLinks);
                 }
               }
@@ -671,12 +706,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                           messagesInRange++;
                           
                           // Extract links from the complete message
-                          const extractedLinks = extractLinksWithContext(line, currentDate, i);
+                          // Clean timestamp from the *full* currentLine before passing
+                          const cleanedFullMessageAlt = line.replace(/^\s*\[\d{1,2}\/\d{1,2}\/\d{2,4}, \d{1,2}:\d{1,2}(?::\d{1,2})?\]\s*/, '');
+                          const extractedLinks = extractLinksWithContext(cleanedFullMessageAlt, currentDate, i);
                           
                           if (extractedLinks.length > 0) {
                             messagesWithLinks++;
                             // Add groupName to each extracted link
-                            extractedLinks.forEach(link => link.groupName = groupName);
+                            extractedLinks.forEach(link => {
+                              link.groupName = groupName;
+                              console.log(`>>> DEBUG Storing Link Context (alt-prev): URL=${link.url}, FullText="${link.fullMessageText?.substring(0,100)}..."`); // Log stored context
+                            });
                             allLinksWithContext.push(...extractedLinks);
                           }
                         }
@@ -707,12 +747,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                       messagesInRange++;
                       
                       // Extract links from the complete message
-                      const extractedLinks = extractLinksWithContext(currentLine, currentDate, allLines.length);
+                      // Clean timestamp from the *full* currentLine before passing
+                      const cleanedLastLine = currentLine.replace(/^\s*\[\d{1,2}\/\d{1,2}\/\d{2,4}, \d{1,2}:\d{1,2}(?::\d{1,2})?\]\s*/, '');
+                      const extractedLinks = extractLinksWithContext(cleanedLastLine, currentDate, allLines.length);
                       
                       if (extractedLinks.length > 0) {
                         messagesWithLinks++;
                         // Add groupName to each extracted link
-                        extractedLinks.forEach(link => link.groupName = groupName);
+                        extractedLinks.forEach(link => {
+                          link.groupName = groupName;
+                          console.log(`>>> DEBUG Storing Link Context (alt-last): URL=${link.url}, FullText="${link.fullMessageText?.substring(0,100)}..."`); // Log stored context
+                        });
                         allLinksWithContext.push(...extractedLinks);
                       }
                     }
@@ -922,10 +967,23 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
 
 // --- JSON Mode Rendering Function ---
 
-function renderSummaryFromJson(summaryJson: SummaryJson, dateRangeInfo: string, summaryDateInfo: string): string {
+function renderSummaryFromJson(
+  summaryJson: SummaryJson, 
+  originalLinks: LinkWithContext[], // Accept the original links
+  dateRangeInfo: string, 
+  summaryDateInfo: string
+): string {
   let output = "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות\n\n";
   output += "*סיכום לינקים שפורסמו בקבוצות השונות בקהילה:*\n";
   output += `${dateRangeInfo ? dateRangeInfo : `תאריך הסיכום: תאריך-${summaryDateInfo}`}\n\n`;
+
+  // Create a map for quick lookup of original link data by URL
+  const originalLinkMap = new Map<string, LinkWithContext>();
+  originalLinks.forEach(link => {
+    if (!originalLinkMap.has(link.url)) { // Keep the first encountered context if duplicates exist
+      originalLinkMap.set(link.url, link);
+    }
+  });
 
   // Loop through categories in the JSON object
   for (const category in summaryJson) {
@@ -933,27 +991,35 @@ function renderSummaryFromJson(summaryJson: SummaryJson, dateRangeInfo: string, 
       output += `*${category.trim()}*\n`; // Category name (bold)
       const linksInCategory = summaryJson[category];
 
-      // Loop through links within the category
-      for (const link of linksInCategory) {
-        output += `  - *${link.name || 'שם לא ידוע'}* - [${link.type || 'סוג לא ידוע'}]\n`; // Name (bold) - [Type]
-        output += `    - תיאור: ${link.description || 'אין תיאור'}\n`;
-        if (link.context) {
-          output += `    - הקשר ההודעה: ${link.context}\n`;
+      // Loop through links within the category (as generated by AI)
+      for (const summarizedLink of linksInCategory) {
+        // Find the original link data using the URL as the key
+        const originalLink = originalLinkMap.get(summarizedLink.url);
+        const groupName = originalLink?.groupName; // Get groupName from original data
+
+        output += `  - *${summarizedLink.name || 'שם לא ידוע'}* - [${summarizedLink.type || 'סוג לא ידוע'}]\n`; // Name (bold) - [Type]
+        output += `    - תיאור: ${summarizedLink.description || 'אין תיאור'}\n`;
+        // Use the full message text directly from the original link data
+        const contextToDisplay = originalLink?.fullMessageText; 
+        if (contextToDisplay) {
+          // Timestamp is already removed from fullMessageText
+          output += `    - הקשר ההודעה: ${contextToDisplay}\n`;
         }
-        if (link.group) {
-          output += `    - קבוצה: ${link.group}\n`;
+        // Use the groupName retrieved from the original link data
+        if (groupName) {
+          output += `    - קבוצה: ${groupName}\n`;
         }
-        if (link.keyPoints && link.keyPoints.length > 0) {
+        if (summarizedLink.keyPoints && summarizedLink.keyPoints.length > 0) {
           output += `    - נקודות מפתח:\n`;
-          link.keyPoints.forEach(point => {
+          summarizedLink.keyPoints.forEach(point => {
             output += `      • ${point}\n`;
           });
         }
-        output += `    - ערך למשתמש: ${link.userValue || 'ערך לא צוין'}\n`;
-        if (link.complexity) {
-          output += `    - זמן/מורכבות: ${link.complexity}\n`;
+        output += `    - ערך למשתמש: ${summarizedLink.userValue || 'ערך לא צוין'}\n`;
+        if (summarizedLink.complexity) {
+          output += `    - זמן/מורכבות: ${summarizedLink.complexity}\n`;
         }
-        output += `    - לינק: ${link.url}\n\n`; // Add extra newline for spacing
+        output += `    - לינק: ${summarizedLink.url}\n\n`; // Add extra newline for spacing
       }
     }
   }
@@ -1055,7 +1121,6 @@ async function generateSummary(
         * type: string (סוג הלינק: למשל SaaS, כלי AI, סרטון, פוסט לינקדאין, מאמר, GitHub, דיון)
         * description: string (משפט קצר ומדויק המסביר את המטרה)
         * context: string (optional - תקציר קצר של ההודעה שבה הלינק פורסם)
-        * group: string (שם הקבוצה בה הלינק פורסם - חובה לכלול אם סופק בשדה groupName בקלט)
         * keyPoints: string[] (מערך של 2-3 נקודות עיקריות)
         * userValue: string (הסבר על הערך לקהל היעד - יזמים, מפתחים וכו')
         * complexity: string (optional - הערכת זמן/מורכבות)
@@ -1106,15 +1171,14 @@ async function generateSummary(
       console.log('Successfully parsed JSON response from OpenAI.');
       // Log the raw JSON object received from the AI
       console.log('>>> Raw JSON received from AI:', JSON.stringify(summaryJson, null, 2)); 
-      // Optional: Add validation here using Zod or similar if needed
     } catch (parseError) {
       console.error('Failed to parse JSON response from OpenAI:', parseError);
       console.error('Raw OpenAI response content:', jsonContent);
       throw new Error('קיבלנו תשובה לא תקינה (לא JSON) מ-OpenAI');
     }
 
-    // Step 4 & 5: Render JSON to formatted text and return
-    const formattedSummary = renderSummaryFromJson(summaryJson, dateRangeInfo, summaryDateInfo);
+    // Step 4 & 5: Render JSON to formatted text, passing original links for groupName lookup
+    const formattedSummary = renderSummaryFromJson(summaryJson, links, dateRangeInfo, summaryDateInfo);
     return formattedSummary;
 
   } catch (error) {
