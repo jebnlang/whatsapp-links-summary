@@ -4,8 +4,6 @@ import { useState, useEffect } from "react";
 import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
 
-type ProcessStep = 'idle' | 'uploading' | 'filtering' | 'extracting' | 'analyzing' | 'complete';
-
 // Define interface for API error responses
 interface ApiError {
   message?: string;
@@ -16,7 +14,6 @@ interface ApiError {
 export default function Home() {
   const [files, setFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
-  const [processStep, setProcessStep] = useState<ProcessStep>('idle');
   const [summary, setSummary] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [errorDetails, setErrorDetails] = useState<ApiError | null>(null);
@@ -63,33 +60,6 @@ export default function Home() {
     }
   }, [copySuccess]);
 
-  // Progress steps timers
-  useEffect(() => {
-    let timers: NodeJS.Timeout[] = [];
-    
-    if (loading && processStep === 'uploading') {
-      // Start the progress steps simulation
-      const filteringTimer = setTimeout(() => {
-        setProcessStep('filtering');
-      }, 2000);
-      
-      const extractingTimer = setTimeout(() => {
-        setProcessStep('extracting');
-      }, 4000);
-      
-      const analyzingTimer = setTimeout(() => {
-        setProcessStep('analyzing');
-      }, 6000);
-      
-      timers = [filteringTimer, extractingTimer, analyzingTimer];
-    }
-    
-    // Clean up timers
-    return () => {
-      timers.forEach(timer => clearTimeout(timer));
-    };
-  }, [loading, processStep]);
-
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       const fileArray = Array.from(e.target.files);
@@ -109,14 +79,12 @@ export default function Home() {
     setError("");
     setErrorDetails(null);
     setSummary("");
-    setProcessStep('uploading');
     
     const formData = new FormData();
     files.forEach((file) => {
       formData.append(`files`, file);
     });
     
-    // Add date filters to the form data if selected
     if (startDate) {
       formData.append('startDate', startDate.toISOString());
     }
@@ -127,9 +95,7 @@ export default function Home() {
     
     try {
       console.log('Sending request to /api/analyze');
-      setProcessStep('uploading');
       
-      // Start the process
       const response = await fetch("/api/analyze", {
         method: "POST",
         body: formData,
@@ -145,7 +111,6 @@ export default function Home() {
         
         // Always set loading to false when an error occurs
         setLoading(false);
-        setProcessStep('idle');
         
         try {
           // Try to parse the error response as JSON
@@ -184,8 +149,6 @@ export default function Home() {
         return; // Stop further execution
       }
       
-      // Success, set final state
-      setProcessStep('complete');
       const data = await response.json();
       console.log('Response data:', data);
       
@@ -207,8 +170,6 @@ export default function Home() {
         error: error instanceof Error ? error.message : 'Unknown error',
         details: error
       });
-      
-      setProcessStep('idle');
     } finally {
       setLoading(false);
     }
@@ -224,64 +185,6 @@ export default function Home() {
       });
   };
 
-  // Progress step labels in Hebrew
-  const progressSteps = {
-    idle: "",
-    uploading: "מעלה קבצים...",
-    filtering: "מסנן לפי תאריכים...",
-    extracting: "מחלץ לינקים...",
-    analyzing: "מנתח ומסכם לינקים עם בינה מלאכותית...",
-    complete: "הושלם בהצלחה!"
-  };
-
-  // Fix the errorDetails rendering in the JSX
-  const renderErrorDetails = () => {
-    if (!errorDetails) return null;
-    
-    return (
-      <div className="mt-4 p-4 bg-red-100 text-red-900 rounded-md">
-        <p className="font-bold mb-2">פרטי שגיאה (למפתחים):</p>
-        <pre className="bg-red-950 p-3 rounded overflow-auto text-xs max-h-40">
-          {JSON.stringify(errorDetails, null, 2)}
-        </pre>
-      </div>
-    );
-  };
-
-  // Error message section with improved guidance
-  const renderErrorMessage = () => {
-    if (!error) return null;
-    
-    // Check if the error is about missing chat files or links
-    const isMissingFiles = error.includes('לא נמצאו לינקים') || error.includes('קבצים');
-    
-    return (
-      <div className="bg-red-50 border border-red-200 rounded-md p-4 my-4">
-        <div className="flex items-start">
-          <div className="flex-shrink-0">
-            <svg className="h-5 w-5 text-red-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-            </svg>
-          </div>
-          <div className="mr-3 w-full">
-            <h3 className="text-sm font-medium text-red-800">{error}</h3>
-            
-            {isMissingFiles && (
-              <div className="mt-2">
-                <button 
-                  onClick={() => setShowHelp(true)}
-                  className="text-sm text-blue-600 hover:text-blue-800 font-medium underline"
-                >
-                  הצג הנחיות ליצוא צ'אט מוואטסאפ
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
-  
   // WhatsApp export help dialog
   const renderHelpDialog = () => {
     if (!showHelp) return null;
@@ -446,62 +349,31 @@ export default function Home() {
         </form>
       </div>
 
-      {/* Progress Indicator */}
-      {loading && processStep !== 'idle' && (
+      {/* Replace Progress Indicator with Simple Loader */}
+      {loading && (
         <div className="bg-gray-800 shadow-md rounded-lg p-6 mb-8 border border-gray-700">
-          <h2 className="text-xl font-bold mb-4 text-white">מצב התהליך</h2>
-          <div className="space-y-4">
-            <div className="flex flex-col space-y-2">
-              {/* Progress Steps */}
-              {(['uploading', 'filtering', 'extracting', 'analyzing'] as ProcessStep[]).map((step, index) => (
-                <div key={step} className="flex items-center">
-                  <div className={`flex-shrink-0 h-8 w-8 rounded-full flex items-center justify-center mr-2 ${
-                    processStep === step 
-                      ? 'bg-blue-600 animate-pulse' 
-                      : processStep === 'complete' || 
-                        ['uploading', 'filtering', 'extracting', 'analyzing'].indexOf(processStep) > 
-                        ['uploading', 'filtering', 'extracting', 'analyzing'].indexOf(step)
-                        ? 'bg-green-600' 
-                        : 'bg-gray-600'
-                  }`}>
-                    {processStep === 'complete' || 
-                      ['uploading', 'filtering', 'extracting', 'analyzing'].indexOf(processStep) > 
-                      ['uploading', 'filtering', 'extracting', 'analyzing'].indexOf(step) ? (
-                      <svg className="h-5 w-5 text-white" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                      </svg>
-                    ) : (
-                      <span className="text-white text-sm">{index + 1}</span>
-                    )}
-                  </div>
-                  <div>
-                    <p className={`font-medium ${processStep === step ? 'text-blue-400' : processStep === 'complete' || ['uploading', 'filtering', 'extracting', 'analyzing'].indexOf(processStep) > ['uploading', 'filtering', 'extracting', 'analyzing'].indexOf(step) ? 'text-green-400' : 'text-gray-400'}`}>
-                      {progressSteps[step]}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-            
-            {/* Progress Bar */}
-            <div className="w-full bg-gray-700 rounded-full h-2.5">
-              <div 
-                className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" 
-                style={{ 
-                  width: `${processStep === 'uploading' ? 25 : 
-                          processStep === 'filtering' ? 50 : 
-                          processStep === 'extracting' ? 75 :
-                          processStep === 'analyzing' ? 90 :
-                          processStep === 'complete' ? 100 : 0}%` 
-                }}
-              ></div>
-            </div>
+          <div className="flex items-center justify-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+            <span className="mr-4 text-lg">מעבד את הקבצים...</span>
           </div>
         </div>
       )}
 
       {/* Improved error message rendering */}
-      {error && renderErrorMessage()}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-md p-4 my-4">
+          <div className="flex items-start">
+            <div className="flex-shrink-0">
+              <svg className="h-5 w-5 text-red-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+              </svg>
+            </div>
+            <div className="mr-3 w-full">
+              <h3 className="text-sm font-medium text-red-800">{error}</h3>
+            </div>
+          </div>
+        </div>
+      )}
 
       {summary && (
         <div className="bg-gray-800 shadow-md rounded-lg p-6 border border-gray-700">

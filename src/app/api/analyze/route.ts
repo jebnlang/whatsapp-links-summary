@@ -44,7 +44,7 @@ async function testOpenAIConnection(): Promise<{success: boolean, error?: string
     const startTime = Date.now();
     
     const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
+      model: 'gpt-4o-mini-2024-07-18',
       messages: [
         { role: 'system', content: 'You are a helpful assistant.' },
         { role: 'user', content: 'Say hello in Hebrew' }
@@ -88,24 +88,30 @@ function logTime(label: string, startTime: number) {
   return elapsed;
 }
 
+<<<<<<< HEAD
 // Simplified but more inclusive URL pattern that will catch both full URLs and domain-only links
 // Updated TLD part to [a-zA-Z]{2,6} to avoid matching numbers like '.0'
 const urlPattern = /((?:https?:\/\/)?(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z]{2,6}\b(?:[-a-zA-Z0-9()@:%_+.~#?&//=]*))/gi;
+=======
+// Regex pattern to find links - combines both simple and comprehensive patterns
+const urlPattern = /((?:https?:\/\/)?(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_+.~#?&//=]*))/gi;
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
 
 // Updated regex pattern to match multiple WhatsApp date formats
-// Supports formats like:
-// [31/12/2023, 23:45:67]
-// [12/31/23, 11:45 PM]
-// [2023-12-31, 23:45:67]
-// [31.12.2023, 23:45]
-// And now also formats without brackets:
-// 22.9.2024, 14:33 - ...
-// 10.9.2024, 12:17 - ...
-const datePattern = /(?:\[)?(\d{1,4}[\.\/\-]\d{1,2}[\.\/\-]\d{1,4}),\s*(\d{1,2}:\d{1,2}(?::\d{1,2})?\s*(?:AM|PM)?)(?:\])?(?:\s*-)?/i;
+// Now more strict about the format to ensure consistent parsing
+const datePattern = /(?:\[)?(\d{1,2})[\.\/\-](\d{1,2})[\.\/\-](\d{2,4}),\s*(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?\s*(?:AM|PM)?(?:\])?(?:\s*-)?/i;
+
+// New regex pattern to extract the sender name from WhatsApp messages with improved handling of format variations
+// Matches patterns like:
+// ~ David Horesh: message
+// Idan Openweb: message
+// ~ Adir: message
+const senderPattern = /(?:\]\s*)(?:-?\s*)?(?:~?\s*)?([^:]+):/i;
 
 // Extracts date from a WhatsApp message line with improved parsing
 function extractDateFromMessage(messageLine: string): Date | null {
   const match = messageLine.match(datePattern);
+<<<<<<< HEAD
   if (!match) return null;
   
   const dateStr = match[1];
@@ -161,53 +167,84 @@ function extractDateFromMessage(messageLine: string): Date | null {
   // Validate the date components
   if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1900 || year > 2100) {
     console.log(`Invalid date components: day=${day}, month=${month}, year=${year}`);
+=======
+  if (!match) {
+    console.log(`No date pattern match found in line: "${messageLine.substring(0, 50)}..."`);
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
     return null;
   }
   
-  // Parse time
-  let hour = 0, minute = 0, second = 0;
-  const timeParts = timeStr.trim().split(':');
-  hour = parseInt(timeParts[0], 10);
-  minute = parseInt(timeParts[1], 10);
+  // Extract components from regex match
+  const [_, dayStr, monthStr, yearStr, hourStr, minuteStr, secondStr] = match;
   
-  // Check if there are seconds
-  if (timeParts.length > 2) {
-    // If seconds exist, they might have AM/PM attached
-    const secondPart = timeParts[2];
-    if (secondPart.includes('AM') || secondPart.includes('PM')) {
-      second = parseInt(secondPart.split(' ')[0], 10);
-      
-      // Adjust hour for PM
-      if (secondPart.includes('PM') && hour < 12) {
-        hour += 12;
-      }
-      // Adjust hour for AM
-      if (secondPart.includes('AM') && hour === 12) {
-        hour = 0;
-      }
-    } else {
-      second = parseInt(secondPart, 10);
-    }
-  } else if (timeParts[1].includes('AM') || timeParts[1].includes('PM')) {
-    // Handle formats like "11:45 PM"
-    const minutePart = timeParts[1].split(' ')[0];
-    minute = parseInt(minutePart, 10);
-    
-    // Adjust hour for AM/PM
-    if (timeParts[1].includes('PM') && hour < 12) {
-      hour += 12;
-    }
-    if (timeParts[1].includes('AM') && hour === 12) {
-      hour = 0;
-    }
+  console.log(`Parsing date components:`, {
+    day: dayStr,
+    month: monthStr,
+    year: yearStr,
+    hour: hourStr,
+    minute: minuteStr,
+    second: secondStr
+  });
+
+  // Parse numeric values
+  const day = parseInt(dayStr, 10);
+  const month = parseInt(monthStr, 10);
+  let year = parseInt(yearStr, 10);
+  const hour = parseInt(hourStr, 10);
+  const minute = parseInt(minuteStr, 10);
+  const second = secondStr ? parseInt(secondStr, 10) : 0;
+
+  // Validate basic ranges
+  if (month < 1 || month > 12) {
+    console.log(`Invalid month value: ${month}`);
+    return null;
   }
   
+  // Get days in the specific month
+  const daysInMonth = new Date(year, month, 0).getDate();
+  if (day < 1 || day > daysInMonth) {
+    console.log(`Invalid day value: ${day} for month: ${month}`);
+    return null;
+  }
+
+  // Handle 2-digit years
+  if (year < 100) {
+    year = year <= 49 ? 2000 + year : 1900 + year;
+    console.log(`Converted 2-digit year ${yearStr} to ${year}`);
+  }
+
+  // Validate year is reasonable (not too old or in future)
+  const currentYear = new Date().getFullYear();
+  if (year < currentYear - 5 || year > currentYear + 1) {
+    console.log(`Year ${year} outside reasonable range`);
+    return null;
+  }
+
+  // Validate time components
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+    console.log(`Invalid time values - hour: ${hour}, minute: ${minute}, second: ${second}`);
+    return null;
+  }
+
   try {
+<<<<<<< HEAD
     // Use Date.UTC to treat the parsed components as UTC directly
     const utcTimestamp = Date.UTC(year, month - 1, day, hour, minute, second);
     const parsedDate = new Date(utcTimestamp);
     // Log the parsed date in UTC for consistency
     console.log(`Parsed date (UTC): ${parsedDate.toISOString()}`);
+=======
+    const parsedDate = new Date(year, month - 1, day, hour, minute, second);
+    
+    // Validate the parsed date is valid and not in the future
+    const now = new Date();
+    if (parsedDate > now) {
+      console.log(`Parsed date ${parsedDate.toISOString()} is in the future`);
+      return null;
+    }
+
+    console.log(`Successfully parsed date: ${parsedDate.toISOString()} from line: "${messageLine.substring(0, 50)}..."`);
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
     return parsedDate;
   } catch (e) {
     console.error('Error creating date object:', e);
@@ -215,8 +252,26 @@ function extractDateFromMessage(messageLine: string): Date | null {
   }
 }
 
+<<<<<<< HEAD
 // Utility function to set a date to the start of the day UTC (00:00:00)
 function setToStartOfDayUTC(date: Date): Date {
+=======
+// Helper function to compare dates ignoring time
+function isSameOrAfterDate(date: Date, compareToDate: Date): boolean {
+  const d1 = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const d2 = new Date(compareToDate.getFullYear(), compareToDate.getMonth(), compareToDate.getDate());
+  return d1 >= d2;
+}
+
+function isSameOrBeforeDate(date: Date, compareToDate: Date): boolean {
+  const d1 = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const d2 = new Date(compareToDate.getFullYear(), compareToDate.getMonth(), compareToDate.getDate());
+  return d1 <= d2;
+}
+
+// Utility function to set a date to the start of the day (00:00:00)
+function setToStartOfDay(date: Date): Date {
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
   const newDate = new Date(date);
   newDate.setUTCHours(0, 0, 0, 0); // Use UTC method
   return newDate;
@@ -276,7 +331,12 @@ interface LinkWithContext {
   messageContext: string; // Snippet around the link for AI prompt
   fullMessageText?: string; // Full message text (cleaned) for final display
   date: Date;
+<<<<<<< HEAD
   groupName?: string;
+=======
+  fileName?: string;
+  sender?: string;
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
 }
 
 // Define OpenAI error type
@@ -358,6 +418,7 @@ function extractLinksWithContext(
   return extractedLinks;
 }
 
+<<<<<<< HEAD
 // Helper function to extract group name from filename
 function extractGroupName(fileName: string): string | undefined {
   let match;
@@ -391,6 +452,33 @@ function extractGroupName(fileName: string): string | undefined {
   return undefined; // Return undefined if no suitable name could be extracted
 }
 
+=======
+// Extract sender name from a message line
+function extractSender(messageLine: string): string | undefined {
+  const match = messageLine.match(senderPattern);
+  if (match && match[1]) {
+    // Clean up the sender name (remove any trailing ~ if present)
+    let sender = match[1].trim();
+    
+    // Remove "requested to join" or other system message indicators if present
+    if (sender.includes('requested to join')) {
+      sender = sender.split('requested to join')[0].trim();
+    }
+    
+    // In case there are multiple tildes, clean them up
+    sender = sender.replace(/^~+\s*/, '').trim();
+    
+    return sender;
+  }
+  return undefined;
+}
+
+// Helper function to create responses
+const createResponse = (data: ResponseData, status = 200) => {
+  return NextResponse.json(data, { status });
+};
+
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
 export async function POST(request: NextRequest): Promise<NextResponse<ResponseData>> {
   const startTime = Date.now();
   console.log(`Starting file processing at ${new Date().toISOString()}`);
@@ -434,6 +522,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       console.log(`Parsed end date boundary (UTC)  : ${endDate.toISOString()}`);
     }
     
+<<<<<<< HEAD
     // Log the final date range being used for filtering
     console.log(`Filtering with Start Date: ${startDate ? startDate.toISOString() : 'None'}`);
     console.log(`Filtering with End Date  : ${endDate ? endDate.toISOString() : 'None'}`);
@@ -448,8 +537,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       });
     };
     
+=======
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
     if (files.length === 0) {
-      return responseWithProgress('idle', { message: 'לא התקבלו קבצים' }, 400);
+      return createResponse({ message: 'לא התקבלו קבצים' }, 400);
     }
     
     const fileProcessingStartTime = Date.now();
@@ -463,6 +554,21 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
     try {
       for (const file of files) {
         console.log(`Processing file: ${file.name}, size: ${file.size} bytes`);
+        
+        // Extract group name from the ZIP file name
+        let groupName = file.name;
+        
+        // Remove .zip extension if present
+        if (groupName.toLowerCase().endsWith('.zip')) {
+          groupName = groupName.slice(0, -4);
+        }
+        
+        // Remove "WhatsApp Chat - " prefix if present
+        if (groupName.startsWith('WhatsApp Chat - ')) {
+          groupName = groupName.substring('WhatsApp Chat - '.length);
+        }
+        
+        console.log(`Extracted group name from file: "${groupName}"`);
         
         // Extract data from zip file
         let zipBuffer;
@@ -544,9 +650,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                 // Process previous message if it exists and contains links
                 if (currentLine && currentDate) {
                   // Check if the message is within the date range
-                  const isInRange = (!startDate || currentDate >= startDate) && 
-                                    (!endDate || currentDate <= endDate);
-                  
+                  const isAfterStart = !startDate || isSameOrAfterDate(currentDate, startDate);
+                  const isBeforeEnd = !endDate || isSameOrBeforeDate(currentDate, endDate);
+                  const isInRange = isAfterStart && isBeforeEnd;
+
+                  console.log(`Detailed date range check for message:`, {
+                    messageDate: currentDate.toISOString(),
+                    startDate: startDate?.toISOString(),
+                    endDate: endDate?.toISOString(),
+                    isAfterStart,
+                    isBeforeEnd,
+                    isInRange,
+                    messagePreview: currentLine.substring(0, 100)
+                  });
+
                   if (isInRange && currentDate instanceof Date) {
                     messagesInRange++;
                     console.log(`  -> Previous message in range (Date: ${currentDate.toISOString()}). Extracting links.`);
@@ -558,6 +675,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                     
                     if (extractedLinks.length > 0) {
                       messagesWithLinks++;
+<<<<<<< HEAD
                       // Add groupName to each extracted link
                       extractedLinks.forEach(link => {
                         link.groupName = groupName;
@@ -567,6 +685,47 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                     }
                   } else if (currentDate instanceof Date) {
                     console.log(`  -> Previous message OUT of range (Date: ${currentDate.toISOString()}).`);
+=======
+                      console.log(`Found ${extractedLinks.length} links in message within date range:`, {
+                        messageDate: currentDate.toISOString(),
+                        startDate: startDate?.toISOString(),
+                        endDate: endDate?.toISOString(),
+                        isAfterStart,
+                        isBeforeEnd,
+                        links: extractedLinks.map(l => l.url)
+                      });
+                      
+                      // Extract sender name from the message
+                      let sender = extractSender(currentLine);
+                      
+                      // Update where links are added to include sender information
+                      if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
+                        const validDate: Date = currentDate;
+                        allLinksWithContext.push(...extractedLinks.map(link => ({
+                          url: link.url,
+                          messageContext: currentLine,
+                          date: validDate,
+                          fileName: groupName,
+                          sender: sender
+                        })));
+                      } else {
+                        console.log(`Skipping message - failed secondary date range check:`, {
+                          messageDate: currentDate?.toISOString(),
+                          startDate: startDate?.toISOString(),
+                          endDate: endDate?.toISOString()
+                        });
+                      }
+                    }
+                  } else {
+                    console.log(`Message excluded due to date range:`, {
+                      messageDate: currentDate.toISOString(),
+                      startDate: startDate?.toISOString(),
+                      endDate: endDate?.toISOString(),
+                      isAfterStart,
+                      isBeforeEnd,
+                      messagePreview: currentLine.substring(0, 100)
+                    });
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
                   }
                 }
                 
@@ -577,6 +736,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                 
                 // Also check the current line for links (in case they're in the same line as the date)
                 if (currentDate instanceof Date) {
+<<<<<<< HEAD
                   const isInRange = (!startDate || currentDate >= startDate) && 
                                     (!endDate || currentDate <= endDate);
                   console.log(`  -> Checking date line: Date=${currentDate.toISOString()}, Start=${startDate?.toISOString()}, End=${endDate?.toISOString()}, InRange=${isInRange}`);
@@ -596,6 +756,42 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                     }
                   } else if (currentDate instanceof Date) {
                     console.log(`  -> Previous message OUT of range (Date: ${currentDate.toISOString()}).`);
+=======
+                  // Apply date filtering here too
+                  const isAfterStart = !startDate || isSameOrAfterDate(currentDate, startDate);
+                  const isBeforeEnd = !endDate || isSameOrBeforeDate(currentDate, endDate);
+                  const isInRange = isAfterStart && isBeforeEnd;
+                  
+                  if (isInRange) {
+                    const dateLineLinks = extractLinksWithContext(line, currentDate, i);
+                    if (dateLineLinks.length > 0) {
+                      console.log(`Found ${dateLineLinks.length} links in date line within range:`, {
+                        messageDate: currentDate.toISOString(),
+                        startDate: startDate?.toISOString(),
+                        endDate: endDate?.toISOString(),
+                        links: dateLineLinks.map(l => l.url)
+                      });
+                      
+                      // Extract sender name from the message
+                      let sender = extractSender(line);
+                      
+                      const validDate: Date = currentDate;
+                      allLinksWithContext.push(...dateLineLinks.map(link => ({
+                        url: link.url,
+                        messageContext: line,
+                        date: validDate,
+                        fileName: groupName,
+                        sender: sender
+                      })));
+                    }
+                  } else {
+                    console.log(`Skipping date line - outside date range:`, {
+                      messageDate: currentDate.toISOString(),
+                      startDate: startDate?.toISOString(),
+                      endDate: endDate?.toISOString(),
+                      messagePreview: line.substring(0, 100)
+                    });
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
                   }
                 }
               } else {
@@ -613,9 +809,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
             
             // Process the last line if necessary
             if (currentLine && currentDate) {
-              const isInRange = (!startDate || currentDate >= startDate) && 
-                                (!endDate || currentDate <= endDate);
-              
+              const isAfterStart = !startDate || isSameOrAfterDate(currentDate, startDate);
+              const isBeforeEnd = !endDate || isSameOrBeforeDate(currentDate, endDate);
+              const isInRange = isAfterStart && isBeforeEnd;
+
+              console.log(`Detailed date range check for message:`, {
+                messageDate: currentDate.toISOString(),
+                startDate: startDate?.toISOString(),
+                endDate: endDate?.toISOString(),
+                isAfterStart,
+                isBeforeEnd,
+                isInRange,
+                messagePreview: currentLine.substring(0, 100)
+              });
+
               if (isInRange && currentDate instanceof Date) {
                 messagesInRange++;
                 
@@ -626,13 +833,54 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                 
                 if (extractedLinks.length > 0) {
                   messagesWithLinks++;
+<<<<<<< HEAD
                   // Add groupName to each extracted link
                   extractedLinks.forEach(link => {
                     link.groupName = groupName;
                     console.log(`>>> DEBUG Storing Link Context (std-last): URL=${link.url}, FullText="${link.fullMessageText?.substring(0,100)}..."`); // Log stored context
                   });
                   allLinksWithContext.push(...extractedLinks);
+=======
+                  console.log(`Found ${extractedLinks.length} links in message within date range:`, {
+                    messageDate: currentDate.toISOString(),
+                    startDate: startDate?.toISOString(),
+                    endDate: endDate?.toISOString(),
+                    isAfterStart,
+                    isBeforeEnd,
+                    links: extractedLinks.map(l => l.url)
+                  });
+                  
+                  // Extract sender name from the message
+                  let sender = extractSender(currentLine);
+                  
+                  // Update where links are added to include sender information
+                  if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
+                    const validDate: Date = currentDate;
+                    allLinksWithContext.push(...extractedLinks.map(link => ({
+                      url: link.url,
+                      messageContext: currentLine,
+                      date: validDate,
+                      fileName: groupName,
+                      sender: sender
+                    })));
+                  } else {
+                    console.log(`Skipping message - failed secondary date range check:`, {
+                      messageDate: currentDate?.toISOString(),
+                      startDate: startDate?.toISOString(),
+                      endDate: endDate?.toISOString()
+                    });
+                  }
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
                 }
+              } else {
+                console.log(`Message excluded due to date range:`, {
+                  messageDate: currentDate.toISOString(),
+                  startDate: startDate?.toISOString(),
+                  endDate: endDate?.toISOString(),
+                  isAfterStart,
+                  isBeforeEnd,
+                  messagePreview: currentLine.substring(0, 100)
+                });
               }
             }
             
@@ -699,8 +947,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                       // Process previous line if it exists and contains links
                       if (currentLine && currentDate) {
                         // Check if the message is within the date range
-                        const isInRange = (!startDate || currentDate >= startDate) && 
-                                              (!endDate || currentDate <= endDate);
+                        const isAfterStart = !startDate || currentDate >= startDate;
+                        const isBeforeEnd = !endDate || currentDate <= endDate;
+                        const isInRange = isAfterStart && isBeforeEnd;
                         
                         if (isInRange && currentDate instanceof Date) {
                           messagesInRange++;
@@ -712,12 +961,32 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                           
                           if (extractedLinks.length > 0) {
                             messagesWithLinks++;
+<<<<<<< HEAD
                             // Add groupName to each extracted link
                             extractedLinks.forEach(link => {
                               link.groupName = groupName;
                               console.log(`>>> DEBUG Storing Link Context (alt-prev): URL=${link.url}, FullText="${link.fullMessageText?.substring(0,100)}..."`); // Log stored context
                             });
                             allLinksWithContext.push(...extractedLinks);
+=======
+                            
+                            // Extract sender name from the message
+                            let sender = extractSender(currentLine);
+                            
+                            // Double check date range before adding links
+                            if (currentDate instanceof Date && (!startDate || currentDate >= startDate) && (!endDate || currentDate <= endDate)) {
+                              const validDate: Date = currentDate; // Type assertion to ensure Date type
+                              allLinksWithContext.push(...extractedLinks.map(link => ({
+                                url: link.url,
+                                messageContext: currentLine,
+                                date: validDate,
+                                fileName: groupName,
+                                sender: sender
+                              })));
+                            } else {
+                              console.log('Skipping message - invalid date:', currentDate);
+                            }
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
                           }
                         }
                       }
@@ -753,12 +1022,32 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
                       
                       if (extractedLinks.length > 0) {
                         messagesWithLinks++;
+<<<<<<< HEAD
                         // Add groupName to each extracted link
                         extractedLinks.forEach(link => {
                           link.groupName = groupName;
                           console.log(`>>> DEBUG Storing Link Context (alt-last): URL=${link.url}, FullText="${link.fullMessageText?.substring(0,100)}..."`); // Log stored context
                         });
                         allLinksWithContext.push(...extractedLinks);
+=======
+                        
+                        // Extract sender name from the message
+                        let sender = extractSender(currentLine);
+                        
+                        // Ensure we have a valid date before adding links
+                        if (currentDate instanceof Date) {
+                          const validDate: Date = currentDate; // Type assertion to ensure Date type
+                          allLinksWithContext.push(...extractedLinks.map(link => ({
+                            url: link.url,
+                            messageContext: currentLine,
+                            date: validDate,
+                            fileName: groupName,
+                            sender: sender
+                          })));
+                        } else {
+                          console.log('Skipping message - invalid date:', currentDate);
+                        }
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
                       }
                     }
                   }
@@ -819,7 +1108,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       }
     } catch (error) {
       console.error('Error processing files:', error);
-      return responseWithProgress('idle', { 
+      return createResponse({ 
         message: 'שגיאה בעיבוד הקבצים',
         error: error instanceof Error ? error.message : 'Unknown error',
         details: error 
@@ -854,21 +1143,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       console.log(`- Date range: ${startDate?.toISOString()} to ${endDate?.toISOString()}`);
       console.log(`- Error message to user: ${errorMessage}`);
       
-      return responseWithProgress(
-        'idle',
-        { 
-          message: errorMessage,
-          details: {
-            filesProcessed: files.length,
-            chatFilesFound: totalChatFilesFound,
-            dateRange: {
-              start: startDate?.toISOString(),
-              end: endDate?.toISOString()
-            }
+      return createResponse({ 
+        message: errorMessage,
+        details: {
+          filesProcessed: files.length,
+          chatFilesFound: totalChatFilesFound,
+          dateRange: {
+            start: startDate?.toISOString(),
+            end: endDate?.toISOString()
           }
-        },
-        404
-      );
+        }
+      }, 404);
     }
 
     // Strictly limit links to ensure processing completes within timeout
@@ -892,7 +1177,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       const connectionTest = await testOpenAIConnection();
       if (!connectionTest.success) {
         console.error('OpenAI connection test failed:', connectionTest.error);
-        return responseWithProgress('idle', { 
+        return createResponse({ 
           message: 'שגיאה בחיבור ל-OpenAI',
           error: connectionTest.error,
           details: {
@@ -913,7 +1198,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
       // Log total execution time
       logTime('Total execution time', startTime);
       
-      return responseWithProgress('complete', { summary });
+      return createResponse({ summary });
     } catch (error) {
       const aiTime = logTime('AI processing (error)', aiStartTime);
       console.error('Error generating summary with OpenAI:', error);
@@ -940,13 +1225,13 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
         errorDetails.message = 'זמן העיבוד ארוך מדי. אנא נסה עם פחות קבצים או טווח תאריכים קטן יותר.';
       }
       
-      return responseWithProgress('idle', errorDetails, 500);
+      return createResponse(errorDetails, 500);
     }
   } catch (error) {
     console.error('Error in POST handler:', error);
     const totalTime = logTime('Total execution time (error)', startTime);
     
-    return NextResponse.json(
+    return createResponse(
       { 
         message: 'אירעה שגיאה בעיבוד הקבצים',
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -955,12 +1240,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ResponseD
           totalTimeMs: totalTime
         }
       },
-      { 
-        status: 500,
-        headers: {
-          'X-Process-Step': 'idle'
-        }
-      }
+      500
     );
   }
 }
@@ -1104,6 +1384,7 @@ async function generateSummary(
     
     הנה הלינקים שחולצו ${dateRangeInfo ? dateRangeInfo : ''}:
     ${processedLinks.map(link => {
+<<<<<<< HEAD
       // Create a string representation for the prompt
       return JSON.stringify({
         url: link.url,
@@ -1130,12 +1411,62 @@ async function generateSummary(
     - נתח את תוכן הלינקים וההקשר שלהם כדי ליצור את הנתונים.
     - קבץ את הלינקים לקטגוריות משמעותיות.
     - ודא שהפלט הוא JSON תקין בלבד.
+=======
+      // Clean message context by removing date/time and sender info
+      const cleanedContext = link.messageContext.replace(/^\[.*?\]\s*~?\s*[^:]+:\s*/m, '');
+      return `- הלינק: ${link.url}
+      - ההודעה המלאה: ${cleanedContext}
+      - קבוצה: ${link.fileName || 'לא ידוע'}
+      - שולח: ${link.sender || 'לא ידוע'}
+      - תאריך: ${link.date.toLocaleDateString('he-IL')}
+      - שעה: ${link.date.toLocaleTimeString('he-IL')}`;
+    }).join('\n\n')}
+    
+    סכם את הלינקים הללו באופן מובנה ועקבי עם המבנה המדויק הבא:
+
+    "לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות
+    
+    *סיכום לינקים שפורסמו בקבוצות השונות בקהילה*
+    ${dateRangeInfo ? dateRangeInfo : `תאריך-${summaryDateInfo}`}
+
+    סדר את הלינקים לפי הקטגוריות הבאות בדיוק, והצג רק קטגוריות שיש בהן לינקים:
+    1. *כלי AI ופלטפורמות*
+    2. *רשתות חברתיות ונטוורקינג*
+    3. *שיתוף פעולה ותקשורת*
+    4. *משאבי פיתוח והדרכות*
+    5. *עסקים ושיווק*
+    6. *אחר*
+
+    עבור כל לינק, השתמש במבנה הבא בדיוק, בסדר הזה:
+
+    לינק: [URL]
+    תיאור: [תיאור קצר של הלינק בעברית]
+    ההקשר המלא של ההודעה: [הצג רק אם יש הקשר חשוב מעבר ללינק עצמו]
+    קבוצה: [שם הקבוצה]
+    שולח: [שם השולח]
+    נקודות מפתח: [הצג רק אם רלוונטי, עד 3 נקודות]
+    • [נקודה 1]
+    • [נקודה 2]
+    • [נקודה 3]
+
+    כללים חשובים:
+    1. הצג תמיד את שם הקטגוריה עם כוכבית לפני ואחרי (*כלי AI ופלטפורמות*)
+    2. השאר רווח של שורה אחת בין כל לינק
+    3. הצג את ההקשר המלא של ההודעה רק אם יש בו מידע מהותי מעבר ללינק עצמו
+    4. הצג נקודות מפתח רק כאשר יש מידע רלוונטי ומשמעותי
+    5. אל תוסיף תכנים שאינם מופיעים בפורמט שהוגדר
+    6. אל תוסיף כל טקסט או סיכום בסוף המסמך
+    7. המסמך צריך להסתיים עם הלינק האחרון, ללא כל תוכן נוסף
+
+    הקפד לשמור על מבנה אחיד וקבוע לחלוטין עבור כל הלינקים, בכל פעם שהסיכום נוצר."
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
   `;
 
   console.log('Making API call to OpenAI requesting JSON');
   console.log(`Prompt length: ${prompt.length} characters`);
   
   try {
+<<<<<<< HEAD
     console.log('Attempting OpenAI API call with gpt-4o-mini');
     const apiCallStartTime = Date.now();
     
@@ -1149,6 +1480,20 @@ async function generateSummary(
       response_format: { type: "json_object" }, // Enable JSON mode
       temperature: 0.2, // Lowered temperature for consistency
       max_tokens: 3000, // Adjusted tokens slightly, JSON output can be verbose 
+=======
+    console.log('Attempting OpenAI API call with gpt-4o-mini-2024-07-18');
+    const apiCallStartTime = Date.now();
+    
+    // First try with GPT-4 for speed
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini-2024-07-18',
+      messages: [
+        { role: 'system', content: 'אתה עוזר שמייצר סיכומים מובנים ואחידים לפי פורמט קבוע ומדויק. התוצר שלך זהה בכל פעם מבחינת המבנה.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.3,
+      max_tokens: 2000,
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
     });
     
     const apiCallTime = Date.now() - apiCallStartTime;
@@ -1201,9 +1546,38 @@ async function generateSummary(
         const fallbackStartTime = Date.now();
         
         // Use a bare minimum approach
-        const simplifiedPrompt = `סכם את הלינקים הבאים בצורה מובנית ושימושית:
-          ${processedLinks.slice(0, 20).map(link => {
+        const simplifiedPrompt = `סכם את הלינקים הבאים בפורמט הבא בדיוק:
+
+        לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות
+        
+        *סיכום לינקים שפורסמו בקבוצות השונות בקהילה*
+        ${dateRangeInfo ? dateRangeInfo : `תאריך-${summaryDateInfo}`}
+        
+        קטגוריות (הצג רק קטגוריות שיש בהן לינקים):
+        *כלי AI ופלטפורמות*
+        *רשתות חברתיות ונטוורקינג*
+        *שיתוף פעולה ותקשורת*
+        *משאבי פיתוח והדרכות*
+        *עסקים ושיווק*
+        *אחר*
+        
+        מבנה לכל לינק:
+        לינק: [URL]
+        תיאור: [תיאור קצר]
+        ההקשר המלא של ההודעה: [רק אם יש מידע חשוב]
+        קבוצה: [שם הקבוצה]
+        שולח: [שם השולח]
+        נקודות מפתח: [רק אם רלוונטי]
+        • [נקודה 1]
+        • [נקודה 2]
+        • [נקודה 3]
+        
+        הלינקים:
+        ${processedLinks.slice(0, 20).map(link => {
+            // Clean message context by removing date/time and sender info
+            const cleanedContext = link.messageContext.replace(/^\[.*?\]\s*~?\s*[^:]+:\s*/m, '');
             return `- הלינק: ${link.url}
+<<<<<<< HEAD
             - ההודעה המלאה: ${link.messageContext.replace(link.url, '')}
             - תאריך: ${link.date.toLocaleDateString('he-IL')}${link.groupName ? `\n            - קבוצה: ${link.groupName}` : ''}`;
           }).join('\n\n')}
@@ -1226,16 +1600,32 @@ async function generateSummary(
           
           הקפד על מבנה אחיד, תמציתי וברור בעברית.
         `;
+=======
+            - ההודעה המלאה: ${cleanedContext}
+            - קבוצה: ${link.fileName || 'לא ידוע'}
+            - שולח: ${link.sender || 'לא ידוע'}
+            - תאריך: ${link.date.toLocaleDateString('he-IL')}`;
+        }).join('\n\n')}`;
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
         
         console.log(`Simplified prompt length: ${simplifiedPrompt.length} characters`);
         
         const fallbackResponse = await openai.chat.completions.create({
+<<<<<<< HEAD
           model: 'gpt-4o-mini', // Changed from gpt-3.5-turbo
           messages: [
             { role: 'system', content: 'תן תשובה קצרה ועקבית במבנה המבוקש בעברית.' }, // System message adjusted
             { role: 'user', content: simplifiedPrompt }
           ],
           temperature: 0.2, // Lowered temperature for consistency
+=======
+          model: 'gpt-4o-mini-2024-07-18',
+          messages: [
+            { role: 'system', content: 'אתה עוזר שמייצר סיכומים מובנים ואחידים לפי פורמט קבוע ומדויק.' },
+            { role: 'user', content: simplifiedPrompt }
+          ],
+          temperature: 0.2,
+>>>>>>> 62ad7e5c6c515d3c3995607d1f6ae0457fda6f0f
           max_tokens: 1000,
         });
         
@@ -1250,27 +1640,16 @@ async function generateSummary(
         console.log('Returning basic formatted links as fallback');
         return `לילה טוב לכולם. יום פורה עבר עלינו היום בקבוצות השונות
 
-*סיכום לינקים שפורסמו בקבוצות השונות בקהילה:*
+*סיכום לינקים שפורסמו בקבוצות השונות בקהילה*
 ${dateRangeInfo ? dateRangeInfo : `תאריך-${summaryDateInfo}`}
 
-*לינקים שנמצאו:*
+*אחר*
 ${processedLinks.slice(0, 10).map(link => {
-  // Try to extract domain name for a bit more context
-  let domain = '';
-  try {
-    const url = new URL(link.url);
-    domain = url.hostname.replace('www.', '');
-  } catch (e) {
-    domain = 'אתר';
-  }
-  return `- *${domain}*
-  - תיאור: לינק מקבוצת הוואטסאפ
-  - הקשר: ${link.messageContext.replace(link.url, '').substring(0, 100)}${link.messageContext.replace(link.url, '').length > 100 ? '...' : ''}
-  - תאריך: ${link.date.toLocaleDateString('he-IL')}
-  - לינק: ${link.url}`;
-}).join('\n\n')}
-
-(הסיכום המפורט נכשל עקב עומס - הצגת לינקים בלבד)`;
+  return `לינק: ${link.url}
+תיאור: לינק מקבוצת הוואטסאפ
+קבוצה: ${link.fileName || 'לא ידוע'}
+שולח: ${link.sender || 'לא ידוע'}`;
+}).join('\n\n')}`;
       }
     }
     
